@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -453,6 +454,13 @@ describe('context', () => {
     const { io } = makeIo();
     await expect(main(['context'], { CURA_CTX: 'rel' }, io, { createGitHub: () => fakeGitHub().gh })).rejects.toThrow(/CURA_CTX/);
   });
+
+  test('rejects a non-canonical CURA_CTX', async () => {
+    for (const bad of [`${ctx}/`, `${ctx}/../ctx`, `${ctx}/.`]) {
+      const { io } = makeIo();
+      await expect(main(['prompt'], { CURA_CTX: bad }, io)).rejects.toThrow(/CURA_CTX must be a canonical absolute path/);
+    }
+  });
 });
 
 describe('prompt', () => {
@@ -477,6 +485,42 @@ describe('prompt', () => {
     expect(out).toMatch(/^disallowed_tools=.+$/m);
     const schemaLine = out.split('\n').find((l) => l.startsWith('schema='));
     expect(JSON.parse(schemaLine!.slice('schema='.length))).toHaveProperty('properties.findings');
+  });
+
+  test('emits claude_args that a POSIX shell splits back into the exact arguments', async () => {
+    seedCtx();
+    const { io, code } = makeIo();
+    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7', CURA_MODEL: "it's-a-model" }, io);
+    expect(code()).toBe(0);
+
+    const out = outputs();
+    const value = (name: string) => out.split('\n').find((l) => l.startsWith(`${name}=`))!.slice(name.length + 1);
+    const claudeArgs = value('claude_args');
+    const agents = readFileSync(join(ctx, 'agents.json'), 'utf8');
+    expect(agents).toContain("'");
+
+    // `sh` word-splits and unquotes the string exactly as a shell-style parser must.
+    const split = execFileSync('sh', ['-c', `printf '%s\\0' ${claudeArgs}`], { encoding: 'utf8' }).split('\0').slice(0, -1);
+    expect(split).toEqual([
+      '--json-schema',
+      value('schema'),
+      '--agents',
+      agents,
+      '--allowedTools',
+      value('allowed_tools'),
+      '--disallowedTools',
+      value('disallowed_tools'),
+      '--model',
+      "it's-a-model",
+    ]);
+  });
+
+  test('omits --model from claude_args when CURA_MODEL is unset', async () => {
+    seedCtx();
+    const { io } = makeIo();
+    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7' }, io);
+    const line = outputs().split('\n').find((l) => l.startsWith('claude_args='))!;
+    expect(line).not.toContain('--model');
   });
 
   test('prints outputs to stdout when GITHUB_OUTPUT is unset', async () => {

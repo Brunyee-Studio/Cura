@@ -193,17 +193,31 @@ function prompt(env: Env, io: Io): void {
     maxFiles,
     maxLines,
   });
+  const model = env.CURA_MODEL || undefined;
   const agentsFile = join(ctxDir, 'agents.json');
+  const agents = JSON.stringify(buildAgents({ base: state.base, model }));
+  const allowed = allowedTools({ base: state.base, ctxDir, curaDir });
+  const disallowed = disallowedTools();
+  const schema = JSON.stringify(loadSchema('review'));
   writeFileSync(join(ctxDir, 'lead-prompt.md'), lead);
-  writeFileSync(agentsFile, JSON.stringify(buildAgents({ base: state.base, model: env.CURA_MODEL || undefined })));
+  writeFileSync(agentsFile, agents);
+
+  const claudeArgs = ['--json-schema', schema, '--agents', agents, '--allowedTools', allowed, '--disallowedTools', disallowed];
+  if (model) claudeArgs.push('--model', model);
 
   setOutputs(env, io, {
     prompt: lead,
-    allowed_tools: allowedTools({ base: state.base, ctxDir, curaDir }),
-    disallowed_tools: disallowedTools(),
-    schema: JSON.stringify(loadSchema('review')),
+    allowed_tools: allowed,
+    disallowed_tools: disallowed,
+    schema,
     agents_file: agentsFile,
+    claude_args: claudeArgs.map(shellQuote).join(' '),
   });
+}
+
+/** Single-quotes one argument for a POSIX-shell-style parser (claude-code-action splits `claude_args` that way). */
+function shellQuote(arg: string): string {
+  return `'${arg.replaceAll("'", `'\\''`)}'`;
 }
 
 // ── check ────────────────────────────────────────────────────────────────────
@@ -397,7 +411,9 @@ function required(env: Env, name: string): string {
 
 function ctxFromEnv(env: Env): string {
   const ctxDir = required(env, 'CURA_CTX');
-  if (!isAbsolute(ctxDir)) throw new Error(`CURA_CTX must be an absolute path (got ${ctxDir})`);
+  if (!isAbsolute(ctxDir) || resolve(ctxDir) !== ctxDir) {
+    throw new Error(`CURA_CTX must be a canonical absolute path, without trailing slash, '.' or '..' (got ${ctxDir})`);
+  }
   return ctxDir;
 }
 
