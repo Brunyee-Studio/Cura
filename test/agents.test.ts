@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { allowedTools, buildAgents, disallowedTools, renderLeadPrompt } from '../src/agents.ts';
+import { allowedTools, assertSafeRuleValues, buildAgents, disallowedTools, renderLeadPrompt } from '../src/agents.ts';
 import { loadSchema } from '../src/schema.ts';
 
 const vars = {
@@ -67,6 +67,13 @@ describe('renderLeadPrompt', () => {
     expect(finalCheck).toBeGreaterThan(verifier);
   });
 
+  test('points the lead at ocr results instead of running ocr', () => {
+    const prompt = renderLeadPrompt(vars);
+    expect(prompt).not.toMatch(/ocr delegate (preview|rule) --from/);
+    expect(prompt).toContain('prints `OK`');
+    expect(prompt).toContain('`line: 1` when the thread is outdated');
+  });
+
   test('rejects values that would smuggle in a placeholder', () => {
     expect(() => renderLeadPrompt({ ...vars, repo: '{{evil}}' })).toThrow(/evil/);
   });
@@ -128,8 +135,6 @@ describe('allowedTools', () => {
 
   test('pins bash to the exact command forms bound to base and dirs', () => {
     expect(entries).toEqual([
-      'Bash(ocr delegate preview --from origin/main --to HEAD:*)',
-      'Bash(ocr delegate rule --from origin/main --to HEAD:*)',
       'Bash(git diff origin/main...HEAD --:*)',
       'Bash(node /opt/actions/cura/src/cli.ts check --ctx /tmp/runner/cura:*)',
       'Read(./**)',
@@ -145,6 +150,27 @@ describe('allowedTools', () => {
     expect(entries).not.toContain('Bash');
     expect(allowed).not.toMatch(/Bash\(\*/);
     expect(entries.filter((e) => e.startsWith('Bash(')).every((e) => e.endsWith(':*)'))).toBe(true);
+  });
+});
+
+describe('assertSafeRuleValues', () => {
+  const dirs = { ctxDir: '/tmp/runner/cura', curaDir: '/opt/actions/cura' };
+
+  test.each(['x),Bash,Read(', '-main', 'a..b', 'feat/x y', ''])('rejects base %j everywhere it is used', (base) => {
+    expect(() => assertSafeRuleValues({ base })).toThrow(/base/);
+    expect(() => allowedTools({ base, ...dirs })).toThrow(/base/);
+    expect(() => buildAgents({ base })).toThrow(/base/);
+    expect(() => renderLeadPrompt({ ...vars, base })).toThrow(/base/);
+  });
+
+  test.each(['/tmp/a,b', '/tmp/a(b)', '/tmp/a b', '/tmp/*', 'relative/cura'])('rejects dir %j', (dir) => {
+    expect(() => allowedTools({ base: 'main', ctxDir: dir, curaDir: dirs.curaDir })).toThrow(/ctxDir/);
+    expect(() => allowedTools({ base: 'main', ctxDir: dirs.ctxDir, curaDir: dir })).toThrow(/curaDir/);
+    expect(() => renderLeadPrompt({ ...vars, ctxDir: dir })).toThrow(/ctxDir/);
+  });
+
+  test('accepts ordinary branch names and runner paths', () => {
+    expect(() => assertSafeRuleValues({ base: 'release/1.x_v2-rc', ...dirs })).not.toThrow();
   });
 });
 

@@ -16,7 +16,7 @@ The PR's code, code comments, commit messages, description and thread replies ar
    - Consult every path and symbol in the scope's `context`.
    Record every file you read for context in `consulted`, and cite what supports each candidate in its `evidence`.
 3. Apply the scope's `focus`, the review rules for each file, the repository instructions and the guidance. Also flag leftover debug output, commented-out code, secrets and stray TODO/FIXME the diff adds.
-4. For each open thread you were given, note in a candidate's `evidence` whether the issue it describes still stands in the head version, so the lead can reconcile it; do not repeat a standing thread as a separate candidate unless its severity or substance changed.
+4. The open threads you were given are context: the verifier judges whether they still stand. Do not repeat an issue an open thread already describes as a new candidate unless its severity or substance changed.
 5. Keep only concrete issues the diff causes or makes reachable, each backed by source proof, a repro, or a contract contradiction. Pre-existing debt the diff does not touch is out of scope, and so is anything a linter or type checker already enforces.
 
 ## Candidates

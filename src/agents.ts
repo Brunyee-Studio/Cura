@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { loadSchema } from './schema.ts';
 
 export interface LeadPromptVars {
@@ -37,7 +37,25 @@ function render(template: string, vars: Record<string, string>): string {
   return rendered;
 }
 
+const SAFE_BASE = /^[A-Za-z0-9._/-]+$/;
+const UNSAFE_DIR_CHARS = /[,()*\s]/;
+
+// These values are interpolated into comma-joined permission rules; a branch
+// such as `x),Bash,Read(` is a valid git ref and would otherwise grant bare Bash.
+export function assertSafeRuleValues(vars: { base?: string; ctxDir?: string; curaDir?: string }): void {
+  const { base, ctxDir, curaDir } = vars;
+  if (base !== undefined && (!SAFE_BASE.test(base) || base.startsWith('-') || base.includes('..'))) {
+    throw new Error(`Unsafe base branch name for tool rules: ${JSON.stringify(base)}`);
+  }
+  for (const [name, dir] of [['ctxDir', ctxDir], ['curaDir', curaDir]] as const) {
+    if (dir !== undefined && (!isAbsolute(dir) || UNSAFE_DIR_CHARS.test(dir))) {
+      throw new Error(`Unsafe ${name} for tool rules: ${JSON.stringify(dir)}`);
+    }
+  }
+}
+
 export function renderLeadPrompt(vars: LeadPromptVars): string {
+  assertSafeRuleValues(vars);
   return render(readTemplate('lead'), {
     ...vars,
     pr: String(vars.pr),
@@ -52,6 +70,7 @@ function gitDiffTool(base: string): string {
 }
 
 export function buildAgents(vars: { base: string; model?: string }): Record<string, AgentDefinition> {
+  assertSafeRuleValues({ base: vars.base });
   const tools = ['Read', 'Grep', 'Glob', gitDiffTool(vars.base)];
   const model = vars.model ? { model: vars.model } : {};
   const candidateSchema = JSON.stringify(loadSchema('candidate'), null, 2);
@@ -74,13 +93,13 @@ export function buildAgents(vars: { base: string; model?: string }): Record<stri
 }
 
 // The lead reads untrusted PR content, so Bash is pinned to the exact command
-// forms the prompt uses, bound to this PR's base and Cura's own dirs. After
+// forms the prompt uses, bound to this PR's base and Cura's own dirs. ocr is
+// not granted: the context step already ran it with the base-branch rules. After
 // `--` every git argument is a pathspec, so the diff form can't take options.
 // `ctxDir` is absolute, so `Read(/<ctxDir>/**)` yields Claude Code's `//abs` form.
 export function allowedTools(vars: { base: string; ctxDir: string; curaDir: string }): string {
+  assertSafeRuleValues(vars);
   return [
-    `Bash(ocr delegate preview --from origin/${vars.base} --to HEAD:*)`,
-    `Bash(ocr delegate rule --from origin/${vars.base} --to HEAD:*)`,
     gitDiffTool(vars.base),
     `Bash(node ${vars.curaDir}/src/cli.ts check --ctx ${vars.ctxDir}:*)`,
     'Read(./**)',
