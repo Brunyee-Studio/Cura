@@ -13,7 +13,9 @@
   },
   "devDependencies": {
     "@types/node": "24.19.0",
+    "@types/shell-quote": "1.7.5",
     "oxlint": "1.86.0",
+    "shell-quote": "1.8.4",
     "typescript": "7.0.2",
     "vitest": "5.0.2"
   }

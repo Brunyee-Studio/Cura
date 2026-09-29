@@ -8,8 +8,11 @@ branding:
 # The caller must check out the PR head (not the merge commit) with
 # `fetch-depth: 0` and `persist-credentials: false` before this action runs:
 # inline comment lines must match the PR diff, the review diffs against the
-# base branch's history, and the reviewer can read the workspace, so the token
-# must stay out of .git/config.
+# base branch's history, and the reviewer can read the workspace, so the
+# checkout token must stay out of .git/config. claude-code-action writes its own
+# token into the `origin` URL for the Claude step (the session is denied reads
+# of .git/**); the step right after it removes that again, so no token is left
+# in .git/config for the caller's later steps or the next job on the runner.
 inputs:
   claude_code_oauth_token:
     description: Claude Code subscription token.
@@ -58,6 +61,12 @@ inputs:
     description: Author login whose marked threads Cura owns (set it when `github_token` is not the default token).
     required: false
     default: github-actions
+  allowed_bots:
+    description: >-
+      Comma-separated bot logins allowed to trigger the review (passed to claude-code-action's `allowed_bots`).
+      Runs triggered by a bot, e.g. Dependabot, fail the review step unless the bot is listed here.
+    required: false
+    default: ''
 
 outputs:
   score:
@@ -88,7 +97,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]]; then
-          echo "::error::Cura needs a pull request number; pass the 'pr' input when the triggering event carries none (got '$PR')."
+          echo "::error::Cura needs a pull request number; pass a positive integer as the 'pr' input when the triggering event carries none."
           exit 1
         fi
         fields="$(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isCrossRepository \
@@ -104,27 +113,28 @@ runs:
         # The base name is interpolated into git refs and the reviewer's tool
         # rules; a ref such as `x),Bash,Read(` is valid git but must not get there.
         if [[ ! "$base" =~ ^[A-Za-z0-9._/-]+$ || "$base" == -* || "$base" == *..* ]]; then
-          echo "::error::Unsupported base branch name: '$base'."
+          echo "::error::The PR's base branch name has characters Cura does not support (allowed: letters, digits, '.', '_', '/', '-'; no leading '-' or '..')."
           exit 1
         fi
         if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
-          echo "::error::Unexpected head SHA from the GitHub API: '$head_sha'."
+          echo "::error::The GitHub API returned a head SHA that is not 40 hex characters."
           exit 1
         fi
 
         actual="$(git rev-parse HEAD 2>/dev/null || true)"
         if [[ "$actual" != "$head_sha" ]]; then
-          echo "::error::HEAD is '${actual:-<no git checkout>}' but PR #$PR's head is $head_sha. Check out the PR head before Cura: actions/checkout with ref: <head sha>, fetch-depth: 0 and persist-credentials: false."
+          echo "::error::The checked-out HEAD is not the PR's head commit. Check out the PR head before Cura: actions/checkout with ref set to the PR head SHA, fetch-depth: 0 and persist-credentials: false."
           exit 1
         fi
 
-        # The one-off auth header is passed on the command line only, so the
-        # token is never written to .git/config where the reviewer could read it.
+        # The one-off auth header goes through git's env config for this one
+        # command: never written to .git/config (where the reviewer could read
+        # it) and never on the command line (visible in the process list).
         if ! git rev-parse --verify --quiet "refs/remotes/origin/$base" >/dev/null; then
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
           echo "::add-mask::$auth"
-          git -c http.extraheader="AUTHORIZATION: basic $auth" \
-            fetch --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git fetch --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"
         fi
 
         {
@@ -189,6 +199,25 @@ runs:
         github_token: ${{ inputs.github_token }}
         prompt: ${{ steps.prompt.outputs.prompt }}
         claude_args: ${{ steps.prompt.outputs.claude_args }}
+        allowed_bots: ${{ inputs.allowed_bots }}
+
+    # claude-code-action rewrites `origin` to embed its token
+    # (`https://x-access-token:<token>@…`) and may add a credential helper or
+    # auth header. Restore the plain URL and drop those entries so the token
+    # does not outlive the Claude step in .git/config.
+    - name: Remove Claude Code git credentials
+      if: always()
+      shell: bash
+      run: |
+        git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+        if git remote get-url origin >/dev/null 2>&1; then
+          git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+        fi
+        git config --local --unset-all credential.helper || true
+        headers="$(git config --local --name-only --get-regexp '^http\..*\.extraheader$' || true)"
+        for key in $headers; do
+          git config --local --unset-all "$key" || true
+        done
 
     # Runs even when the review failed so the summary comment reports it. It
     # fails closed: anything but a successful agent outcome publishes a failure.

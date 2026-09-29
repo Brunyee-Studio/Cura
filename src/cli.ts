@@ -215,9 +215,23 @@ function prompt(env: Env, io: Io): void {
   });
 }
 
-/** Single-quotes one argument for a POSIX-shell-style parser (claude-code-action splits `claude_args` that way). */
-function shellQuote(arg: string): string {
-  return `'${arg.replaceAll("'", `'\\''`)}'`;
+/**
+ * Quotes one argument so both a POSIX shell and claude-code-action's `shell-quote`
+ * parser (1.8.x) split it back exactly. shell-quote's tokenizer treats a backslash
+ * right before a closing quote as escaping it, so no quoted segment may end in `\`:
+ * text goes in single quotes, and each `'` (with any backslashes before it) goes in
+ * double quotes, where `\\` is one backslash and `'` is literal.
+ */
+export function shellQuote(arg: string): string {
+  if (arg.endsWith('\\')) throw new Error(`claude_args value must not end with a backslash: ${JSON.stringify(arg)}`);
+  const pieces = arg.split("'");
+  const last = pieces.pop()!;
+  const quoted = pieces.map((piece) => {
+    const text = piece.replace(/\\+$/, '');
+    const slashes = piece.length - text.length;
+    return `${text ? `'${text}'` : ''}"${'\\\\'.repeat(slashes)}'"`;
+  });
+  return quoted.join('') + (last || quoted.length === 0 ? `'${last}'` : '');
 }
 
 // ── check ────────────────────────────────────────────────────────────────────

@@ -42,6 +42,22 @@ function runBlocks(): string[][] {
   return blocks;
 }
 
+/** Each composite step's text, keyed by its `id:` (or its name when it has none), in file order. */
+function steps(): { key: string; text: string }[] {
+  const starts = lines.flatMap((line, i) => (/^ {4}- name: /.test(line) ? [i] : []));
+  return starts.map((start, n) => {
+    const text = lines.slice(start, starts[n + 1] ?? lines.length).join('\n');
+    const key = /^ {6}id: (\S+)$/m.exec(text)?.[1] ?? /- name: (.+)/.exec(text)![1]!;
+    return { key, text };
+  });
+}
+
+function step(key: string): string {
+  const found = steps().find((s) => s.key === key);
+  expect(found, `step ${key}`).toBeDefined();
+  return found!.text;
+}
+
 describe('action.yml', () => {
   test('every declared input is used', () => {
     const inputs = topLevelKeys('inputs');
@@ -73,6 +89,26 @@ describe('action.yml', () => {
       for (const line of body) expect(line).not.toContain('${{');
     }
     expect(action).not.toMatch(/^\s*(?:- )?run: [^|\n]*\$\{\{/m);
+  });
+
+  test('publish fails closed on the agent outcome and reads its structured output', () => {
+    const publish = step('publish');
+    expect(publish).toContain('AGENT_OUTCOME: ${{ steps.claude.outcome }}');
+    expect(publish).toContain('REVIEW: ${{ steps.claude.outputs.structured_output }}');
+  });
+
+  test('passes allowed_bots through to claude-code-action', () => {
+    expect(step('claude')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
+  });
+
+  test("removes claude-code-action's git credentials right after the Claude step, always", () => {
+    const keys = steps().map((s) => s.key);
+    const cleanup = steps()[keys.indexOf('claude') + 1]!;
+    expect(cleanup.key).toBe('Remove Claude Code git credentials');
+    expect(cleanup.text).toMatch(/^ {6}if: always\(\)$/m);
+    expect(cleanup.text).toContain('git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"');
+    expect(cleanup.text).toContain('--unset-all credential.helper');
+    expect(cleanup.text).toContain('extraheader');
   });
 
   test('pins third-party actions by commit SHA', () => {

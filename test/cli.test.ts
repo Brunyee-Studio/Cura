@@ -3,8 +3,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse as parseShell } from 'shell-quote';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { main, type Deps } from '../src/cli.ts';
+import { main, shellQuote, type Deps } from '../src/cli.ts';
 import type { GitHub } from '../src/github.ts';
 import { assetName } from '../src/install.ts';
 import type { Finding, Review } from '../src/types.ts';
@@ -487,10 +488,12 @@ describe('prompt', () => {
     expect(JSON.parse(schemaLine!.slice('schema='.length))).toHaveProperty('properties.findings');
   });
 
-  test('emits claude_args that a POSIX shell splits back into the exact arguments', async () => {
+  test('emits claude_args that shell-quote and a POSIX shell split back into the exact arguments', async () => {
     seedCtx();
+    // Quotes, backslashes, `$` and spaces: everything a shell-style parser could misread.
+    const model = "it's \\'a\\ $HOME $(id) `x` \\\\'";
     const { io, code } = makeIo();
-    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7', CURA_MODEL: "it's-a-model" }, io);
+    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7', CURA_MODEL: model }, io);
     expect(code()).toBe(0);
 
     const out = outputs();
@@ -498,10 +501,7 @@ describe('prompt', () => {
     const claudeArgs = value('claude_args');
     const agents = readFileSync(join(ctx, 'agents.json'), 'utf8');
     expect(agents).toContain("'");
-
-    // `sh` word-splits and unquotes the string exactly as a shell-style parser must.
-    const split = execFileSync('sh', ['-c', `printf '%s\\0' ${claudeArgs}`], { encoding: 'utf8' }).split('\0').slice(0, -1);
-    expect(split).toEqual([
+    const expected = [
       '--json-schema',
       value('schema'),
       '--agents',
@@ -511,8 +511,25 @@ describe('prompt', () => {
       '--disallowedTools',
       value('disallowed_tools'),
       '--model',
-      "it's-a-model",
-    ]);
+      model,
+    ];
+
+    // claude-code-action splits claude_args with the shell-quote package.
+    expect(parseShell(claudeArgs)).toEqual(expected);
+    const split = execFileSync('sh', ['-c', `printf '%s\\0' ${claudeArgs}`], { encoding: 'utf8' }).split('\0').slice(0, -1);
+    expect(split).toEqual(expected);
+  });
+
+  test('shellQuote round-trips quotes and backslashes through shell-quote and sh', () => {
+    const values = ["'", "''", "\\'", "\\\\'x", "a\\b", "x\\'y", "it's", '', ' ', '$HOME $(id) `x` #c', '{"a":"b\\"c\\n"}', 'Bash(git diff:*)', "\\'\\'"];
+    const joined = values.map(shellQuote).join(' ');
+    expect(parseShell(joined)).toEqual(values);
+    const split = execFileSync('sh', ['-c', `printf '%s\\0' ${joined}`], { encoding: 'utf8' }).split('\0').slice(0, -1);
+    expect(split).toEqual(values);
+  });
+
+  test('shellQuote refuses a value ending in a backslash', () => {
+    expect(() => shellQuote('model\\')).toThrow(/backslash/);
   });
 
   test('omits --model from claude_args when CURA_MODEL is unset', async () => {
