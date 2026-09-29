@@ -1,0 +1,146 @@
+name: Cura review
+
+# Reusable workflow: call it from a workflow triggered by `pull_request`
+# (opened, reopened, ready_for_review, synchronize, edited) and
+# `issue_comment` (created) — see examples/cura.yml. It checks out the PR head
+# and runs the Cura action (the checkout is the caller's repository, so the
+# action is referenced by tag; `v1` moves with this workflow's own tag).
+on:
+  workflow_call:
+    inputs:
+      runs_on:
+        description: Runner label for the review job.
+        type: string
+        default: ubuntu-latest
+      rules:
+        description: OCR rule file, read from the PR's base branch (skipped when absent there).
+        type: string
+        default: .opencodereview/rule.json
+      config:
+        description: Cura config file, read from the PR's base branch.
+        type: string
+        default: .github/cura.json
+      model:
+        description: Model override for the lead and its subagents. Defaults to Claude Code's default.
+        type: string
+        default: ''
+      fail_on:
+        description: Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`).
+        type: string
+        default: none
+      max_files_per_scope:
+        description: Chunk cap — files per review scope.
+        type: number
+        default: 12
+      max_lines_per_scope:
+        description: Chunk cap — changed lines (added + removed) per review scope.
+        type: number
+        default: 1500
+      timeout_minutes:
+        description: Timeout for the review job.
+        type: number
+        default: 45
+      allowed_bots:
+        description: Comma-separated bot logins allowed to trigger the review (e.g. `dependabot[bot]`).
+        type: string
+        default: ''
+      allow_forks:
+        description: Review cross-repository PRs. Unsafe on self-hosted runners.
+        type: boolean
+        default: false
+    secrets:
+      claude_code_oauth_token:
+        description: Claude Code subscription token.
+        required: true
+    outputs:
+      score:
+        description: Merge-safety score, 1 (unsafe) to 5 (no findings); 0 when the review failed.
+        value: ${{ jobs.review.outputs.score }}
+      findings:
+        description: Number of open findings.
+        value: ${{ jobs.review.outputs.findings }}
+      summary_url:
+        description: URL of the Cura summary comment.
+        value: ${{ jobs.review.outputs.summary_url }}
+
+jobs:
+  review:
+    name: Cura review
+    # Drafts are reviewed when they are marked ready (ready_for_review). Title
+    # and body edits are skipped; only a base branch change re-runs the review.
+    # A `/cura` comment from a repo member re-runs it on demand.
+    if: >-
+      ${{
+        (github.event_name == 'pull_request'
+          && !github.event.pull_request.draft
+          && (github.event.action != 'edited' || github.event.changes.base))
+        || (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && startsWith(github.event.comment.body, '/cura')
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      }}
+    # Job-level so skipped runs (title/body edits, other comments) don't cancel
+    # a live review; a newer run cancels the in-progress one.
+    concurrency:
+      group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    outputs:
+      score: ${{ steps.cura.outputs.score }}
+      findings: ${{ steps.cura.outputs.findings }}
+      summary_url: ${{ steps.cura.outputs.summary_url }}
+    steps:
+      # Resolved from the API because comment-triggered runs carry no PR
+      # payload. Fork code is refused before it is checked out.
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ALLOW_FORKS: ${{ inputs.allow_forks }}
+        run: |
+          set -euo pipefail
+          fields="$(gh pr view "$PR" --repo "$REPO" --json headRefOid,isCrossRepository \
+            --jq '[.headRefOid, .isCrossRepository] | @tsv')"
+          IFS=$'\t' read -r head_sha cross <<<"$fields"
+          if [[ "$cross" == true && "$ALLOW_FORKS" != true ]]; then
+            echo "::error::Cura does not review pull requests from forks; set allow_forks: true to override (unsafe on self-hosted runners)."
+            exit 1
+          fi
+          if [[ -n "$COMMENT_ID" ]]; then
+            gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null
+          fi
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR head, not the synthetic merge commit, so inline comment line
+          # numbers match the lines GitHub shows in the PR diff.
+          ref: ${{ steps.pr.outputs.head_sha }}
+          # The review diffs the PR against its base branch, so it needs history.
+          fetch-depth: 0
+          # The reviewer can read the workspace; keep the token out of .git/config.
+          persist-credentials: false
+
+      - name: Cura
+        id: cura
+        uses: Brunyee-Studio/cura@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
+          pr: ${{ github.event.pull_request.number || github.event.issue.number }}
+          rules: ${{ inputs.rules }}
+          config: ${{ inputs.config }}
+          model: ${{ inputs.model }}
+          fail_on: ${{ inputs.fail_on }}
+          max_files_per_scope: ${{ inputs.max_files_per_scope }}
+          max_lines_per_scope: ${{ inputs.max_lines_per_scope }}
+          allowed_bots: ${{ inputs.allowed_bots }}
+          allow_forks: ${{ inputs.allow_forks }}

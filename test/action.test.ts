@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { runBlocks } from './yaml-lines.ts';
 
 const root = join(import.meta.dirname, '..');
 const action = readFileSync(join(root, 'action.yml'), 'utf8');
@@ -22,24 +23,6 @@ function topLevelKeys(section: string): string[] {
     if (key) keys.push(key);
   }
   return keys;
-}
-
-/** Body lines of every `run: |` block, i.e. the lines indented deeper than the `run:` key. */
-function runBlocks(): string[][] {
-  const blocks: string[][] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const m = /^(\s*)(?:- )?run: \|/.exec(lines[i]!);
-    if (!m) continue;
-    const indent = m[1]!.length + (lines[i]!.trimStart().startsWith('- ') ? 2 : 0);
-    const body: string[] = [];
-    for (let j = i + 1; j < lines.length; j++) {
-      const line = lines[j]!;
-      if (line.trim() !== '' && line.length - line.trimStart().length <= indent) break;
-      body.push(line);
-    }
-    blocks.push(body);
-  }
-  return blocks;
 }
 
 /** Each composite step's text, keyed by its `id:` (or its name when it has none), in file order. */
@@ -83,7 +66,7 @@ describe('action.yml', () => {
   });
 
   test('run scripts take no ${{ }} expressions; untrusted data goes through env', () => {
-    const blocks = runBlocks();
+    const blocks = runBlocks(lines);
     expect(blocks.length).toBeGreaterThanOrEqual(5);
     for (const body of blocks) {
       for (const line of body) expect(line).not.toContain('${{');

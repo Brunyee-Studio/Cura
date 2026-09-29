@@ -1,0 +1,69 @@
+name: Cura
+
+# Dogfood: Cura reviews its own pull requests with the action code on the PR
+# head (`uses: ./`). Needs the repository secret CLAUDE_CODE_OAUTH_TOKEN.
+# Fork PRs are refused before checkout, and only members can trigger `/cura`,
+# so the checked-out action code comes from a branch of this repository.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, edited]
+  # issue_comment workflows run from the default branch's copy of this file.
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    name: Cura review
+    if: >-
+      ${{
+        (github.event_name == 'pull_request'
+          && !github.event.pull_request.draft
+          && (github.event.action != 'edited' || github.event.changes.base))
+        || (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && startsWith(github.event.comment.body, '/cura')
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      }}
+    concurrency:
+      group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Resolve pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          set -euo pipefail
+          fields="$(gh pr view "$PR" --repo "$REPO" --json headRefOid,isCrossRepository \
+            --jq '[.headRefOid, .isCrossRepository] | @tsv')"
+          IFS=$'\t' read -r head_sha cross <<<"$fields"
+          if [[ "$cross" == true ]]; then
+            echo "::error::Cura does not review pull requests from forks."
+            exit 1
+          fi
+          if [[ -n "$COMMENT_ID" ]]; then
+            gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null
+          fi
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cura
+        uses: ./
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          pr: ${{ github.event.pull_request.number || github.event.issue.number }}

@@ -1,0 +1,91 @@
+# Copy to .github/workflows/cura.yml and add the repository secret
+# CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`).
+name: Cura
+
+on:
+  pull_request:
+    # Review when a PR opens and on each push; `edited` re-reviews only when
+    # the base branch changes (the reusable workflow skips title/body edits).
+    types: [opened, reopened, ready_for_review, synchronize, edited]
+  # A `/cura` PR comment from a repo member re-runs the review.
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    # The called workflow's token can't have more than the caller grants.
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: Brunyee-Studio/cura/.github/workflows/review.yml@v1
+    # Every input is optional; the defaults are shown.
+    # with:
+    #   runs_on: ubuntu-latest
+    #   rules: .opencodereview/rule.json
+    #   config: .github/cura.json
+    #   model: ''
+    #   fail_on: none
+    #   max_files_per_scope: 12
+    #   max_lines_per_scope: 1500
+    #   timeout_minutes: 45
+    #   allowed_bots: ''
+    #   allow_forks: false
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+# Alternative: run the composite action in your own job instead of the
+# reusable workflow. Replace the `review` job above with this one. The action
+# needs the PR head checked out with `fetch-depth: 0` and
+# `persist-credentials: false`.
+#
+#   review:
+#     if: >-
+#       ${{
+#         (github.event_name == 'pull_request'
+#           && !github.event.pull_request.draft
+#           && (github.event.action != 'edited' || github.event.changes.base))
+#         || (github.event_name == 'issue_comment'
+#           && github.event.issue.pull_request
+#           && startsWith(github.event.comment.body, '/cura')
+#           && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+#       }}
+#     concurrency:
+#       group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
+#       cancel-in-progress: true
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 45
+#     permissions:
+#       contents: read
+#       pull-requests: write
+#       issues: write
+#     steps:
+#       - name: Resolve pull request
+#         id: pr
+#         env:
+#           GH_TOKEN: ${{ github.token }}
+#           REPO: ${{ github.repository }}
+#           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+#           COMMENT_ID: ${{ github.event.comment.id }}
+#         run: |
+#           set -euo pipefail
+#           fields="$(gh pr view "$PR" --repo "$REPO" --json headRefOid,isCrossRepository \
+#             --jq '[.headRefOid, .isCrossRepository] | @tsv')"
+#           IFS=$'\t' read -r head_sha cross <<<"$fields"
+#           if [[ "$cross" == true ]]; then
+#             echo "::error::Cura does not review pull requests from forks."
+#             exit 1
+#           fi
+#           if [[ -n "$COMMENT_ID" ]]; then
+#             gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content=eyes > /dev/null
+#           fi
+#           echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#         with:
+#           ref: ${{ steps.pr.outputs.head_sha }}
+#           fetch-depth: 0
+#           persist-credentials: false
+#       - uses: Brunyee-Studio/cura@v1
+#         with:
+#           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#           pr: ${{ github.event.pull_request.number || github.event.issue.number }}
