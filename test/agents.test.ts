@@ -50,12 +50,14 @@ describe('renderLeadPrompt', () => {
     expect(prompt).toContain('run `node /opt/actions/cura/src/cli.ts check --ctx /tmp/runner/cura`');
     expect(prompt).toContain('in a single message');
     expect(prompt).toContain('Do not assign a score');
-    expect(prompt).toContain("node /opt/actions/cura/src/cli.ts check --ctx /tmp/runner/cura <<'CURA_EOF'");
-    expect(prompt).toContain('CURA_EOF');
+    expect(prompt).toContain('`/tmp/runner/cura/drafts/plan.json`');
+    expect(prompt).toContain('`/tmp/runner/cura/drafts/review.json`');
+    expect(prompt).not.toContain('<<');
+    expect(prompt).toContain('Wait for every dispatched reviewer to return');
     expect(prompt).toContain('FALLBACK PLAN');
   });
 
-  test('keeps the check heredoc and dispatch before returning', () => {
+  test('keeps the plan check and dispatch before returning', () => {
     const prompt = renderLeadPrompt(vars);
     const plan = prompt.indexOf('check --ctx /tmp/runner/cura --plan');
     const dispatch = prompt.indexOf('in a single message');
@@ -139,6 +141,7 @@ describe('allowedTools', () => {
       'Bash(node /opt/actions/cura/src/cli.ts check --ctx /tmp/runner/cura:*)',
       'Read(./**)',
       'Read(//tmp/runner/cura/**)',
+      'Edit(//tmp/runner/cura/drafts/**)',
       'Grep',
       'Glob',
       'Agent',
