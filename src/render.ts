@@ -68,10 +68,13 @@ function isFindingMeta(value: unknown): value is FindingMeta {
   );
 }
 
-/** Inline comment body. File-level anchors cite the location in text; suggestions only apply to exact line anchors. */
-export function renderFindingComment(f: Finding, opts: { anchor: Anchor }): string {
+/**
+ * Inline comment body. File-level anchors cite the location in text (`citeLine`, default the finding's line);
+ * suggestions only apply to exact line anchors.
+ */
+export function renderFindingComment(f: Finding, opts: { anchor: Anchor; citeLine?: number }): string {
   const { anchor } = opts;
-  const cite = anchor.kind === 'file' ? `\`${f.path}:${f.line}\` — ` : '';
+  const cite = anchor.kind === 'file' ? `\`${f.path}:${opts.citeLine ?? f.line}\` — ` : '';
   const parts = [`**[${f.severity} · ${f.category}] ${f.title}**`, `${cite}${f.body}`];
   if (f.suggestion !== undefined && anchor.kind === 'line' && !anchor.snapped) parts.push(fenced('suggestion', f.suggestion));
   const marker = findingMarker({ v: 1, severity: f.severity, category: f.category, fingerprint: fingerprint(f) });

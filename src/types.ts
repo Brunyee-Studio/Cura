@@ -18,7 +18,7 @@ export interface Review {
   discarded: { location: string; candidate: string; reason: string }[];
 }
 export interface FindingMeta { v: 1; severity: Severity; category: Category; fingerprint: string }
-export interface Thread { id: string; commentId: number; url: string; path: string; line: number | null; isResolved: boolean; isOutdated: boolean; body: string; meta: FindingMeta; replies: { author: string; body: string }[] }
+export interface Thread { id: string; commentId: number; url: string; path: string; line: number | null; originalLine: number | null; subjectType: 'LINE' | 'FILE'; isResolved: boolean; isOutdated: boolean; body: string; meta: FindingMeta; replies: { author: string; body: string }[] }
 export interface CheckError { code: string; message: string; path?: string }
 export type Anchor =
   | { kind: 'line'; path: string; line: number; start_line?: number; snapped: boolean }

@@ -12,6 +12,8 @@ const thread = (id: string, isResolved = false): Thread => ({
   url: `https://github.com/o/r/pull/1#${id}`,
   path: 'src/github.ts',
   line: 10,
+  originalLine: 10,
+  subjectType: 'LINE',
   isResolved,
   isOutdated: false,
   body: 'body',

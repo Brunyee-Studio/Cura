@@ -68,6 +68,8 @@ interface Ctx {
 
 const SEVERITY_RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2 };
 const TITLE_RE = /^\*\*\[[^\]]*\]\s*([\s\S]*?)\*\*/;
+const CITE_RE = /^`[^`\n]*:(\d+)` — /;
+const SUGGESTION_RE = /\n\n(`{3,})suggestion\n[\s\S]*\n\1$/;
 
 /** Validates the lead's review and deterministically writes comments, thread lifecycle and the summary to the PR. */
 export async function publish(opts: PublishOptions): Promise<PublishResult> {
@@ -185,18 +187,42 @@ async function editChangedFindings(ctx: Ctx, findings: Finding[], threads: Map<s
   for (const finding of findings) {
     const thread = finding.thread_id === undefined ? undefined : threads.get(finding.thread_id);
     if (!thread || thread.isResolved) continue;
-    // Anchor from where the comment actually sits: a suggestion only belongs on the finding's own line.
-    const anchor: Anchor = thread.line === null
-      ? { kind: 'file', path: finding.path }
-      : { kind: 'line', path: finding.path, line: thread.line, snapped: thread.line !== finding.line };
-    const body = renderFindingComment(finding, { anchor });
+    const { anchor, citeLine } = anchorOnThread(thread, finding);
+    const body = renderFindingComment(finding, { anchor, citeLine });
+    // An outdated thread's suggestion can no longer apply, so it is dropped on edit but never forces one.
+    const previous = anchor.kind === 'line' && thread.line === null ? stripSuggestion(thread.body) : thread.body;
     const unchanged =
       thread.meta.severity === finding.severity &&
       thread.meta.category === finding.category &&
       thread.meta.fingerprint === fingerprint(finding) &&
-      stripMarkerLine(body) === thread.body;
+      stripMarkerLine(body) === previous;
     if (!unchanged) await ctx.gh.rest('PATCH', `${pullsPath(ctx)}/comments/${thread.commentId}`, { body });
   }
+}
+
+/**
+ * Re-renders from where the comment actually sits, so an unchanged finding reproduces its body byte for byte:
+ * a file-level thread keeps the line it cited when posted; an outdated line thread stays on its original line
+ * without a suggestion; a live line thread keeps its suggestion only on the finding's own line.
+ */
+function anchorOnThread(thread: Thread, finding: Finding): { anchor: Anchor; citeLine?: number } {
+  if (thread.subjectType === 'FILE') {
+    return { anchor: { kind: 'file', path: finding.path }, citeLine: citedLine(thread.body) ?? thread.originalLine ?? finding.line };
+  }
+  if (thread.line === null) {
+    return { anchor: { kind: 'line', path: finding.path, line: thread.originalLine ?? finding.line, snapped: true } };
+  }
+  return { anchor: { kind: 'line', path: finding.path, line: thread.line, snapped: thread.line !== finding.line } };
+}
+
+/** The line a file-level comment cites at the start of its second paragraph (`path:line` — …). */
+function citedLine(body: string): number | undefined {
+  const match = CITE_RE.exec(body.split('\n\n')[1] ?? '');
+  return match ? Number(match[1]) : undefined;
+}
+
+function stripSuggestion(body: string): string {
+  return body.replace(SUGGESTION_RE, '');
 }
 
 /** Replies to and resolves each fixed or dismissed thread once; human-resolved and unknown threads are left alone. */

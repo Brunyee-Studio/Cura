@@ -20,6 +20,8 @@ interface ThreadNode {
   isOutdated: boolean;
   path: string;
   line: number | null;
+  originalLine: number | null;
+  subjectType: 'LINE' | 'FILE';
   comments: { nodes: CommentNode[] };
 }
 
@@ -37,7 +39,7 @@ const THREADS_QUERY = `query($owner: String!, $name: String!, $pr: Int!, $after:
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
-          id isResolved isOutdated path line
+          id isResolved isOutdated path line originalLine subjectType
           comments(first: 50) { nodes { databaseId url body author { login } } }
         }
       }
@@ -76,6 +78,8 @@ function toThread(node: ThreadNode, botLogin: string): Thread | null {
     url: root.url,
     path: node.path,
     line: node.line,
+    originalLine: node.originalLine,
+    subjectType: node.subjectType,
     isResolved: node.isResolved,
     isOutdated: node.isOutdated,
     body: stripMarkerLine(root.body),

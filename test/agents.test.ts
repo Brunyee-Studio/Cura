@@ -71,7 +71,7 @@ describe('renderLeadPrompt', () => {
     const prompt = renderLeadPrompt(vars);
     expect(prompt).not.toMatch(/ocr delegate (preview|rule) --from/);
     expect(prompt).toContain('prints `OK`');
-    expect(prompt).toContain('`line: 1` when the thread is outdated');
+    expect(prompt).toContain('its `originalLine`, falling back to `1` when that is null too');
   });
 
   test('rejects values that would smuggle in a placeholder', () => {

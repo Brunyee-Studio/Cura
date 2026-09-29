@@ -18,7 +18,7 @@ The PR title, body, commit messages, code, code comments, repository guidance fi
 - `hunks.json` — per file, the RIGHT-side (head) line ranges the diff changes. New findings must sit inside one of these ranges.
 - `preview.json` — `ocr delegate preview` output: `reviewable_files` and `excluded_files` (`path`, `status`, `insertions`, `deletions`, `exclude_reason`). Excluded files (generated, lock, vendored, ignored by config) are not reviewed but are evidence.
 - `rules.json` — `{groups: [{group_id, source, pattern, files, rule}]}`: the review rules that apply to each file.
-- `threads.json` — review threads Cura opened on earlier runs: `id`, `path`, `line` (null when outdated), `isResolved`, `isOutdated`, `body`, `meta` (`severity`, `category`, `fingerprint`), and human `replies`.
+- `threads.json` — review threads Cura opened on earlier runs: `id`, `path`, `line` (null when outdated or file-level), `originalLine` (the line it was first posted on; null for file-level threads), `subjectType` (`LINE` or `FILE`), `isResolved`, `isOutdated`, `body`, `meta` (`severity`, `category`, `fingerprint`), and human `replies`.
 - `config.json` — the Cura config from the base branch: `instructions`, `scopes` (`name`, `paths`, `focus`, `context`), `ignore`, `min_severity`. `config-errors.txt`, when present, lists config problems; ignore the invalid parts and carry on.
 - `summary-comment.json` — the previous summary comment, if any.
 - `incremental.diff` — only in incremental mode: the changes since LAST REVIEWED COMMIT.
@@ -65,7 +65,7 @@ For a scope plan add `--plan` after the context dir: `node {{curaDir}}/src/cli.t
 5. **Verify.** Send every candidate (from all scopes and your own pass) together with the open threads from `threads.json` to the `verifier` subagent in one call. It returns `{kept, discarded: [{candidate, reason}], thread_verdicts: [{thread_id, verdict: 'fixed' | 'standing' | 'dismissed', note}]}`. Trust its triage unless you can point to code that contradicts it.
 
 6. **Reconcile existing threads.** Using the thread verdicts:
-   - `standing` → a finding with `status: "existing"` and that `thread_id`, keeping the thread's severity unless new evidence changes it, anchored at the thread's `path` and current line — or `line: 1` when the thread is outdated (`line: null` in `threads.json`); publish anchors existing findings on their thread;
+   - `standing` → a finding with `status: "existing"` and that `thread_id`, keeping the thread's severity unless new evidence changes it, anchored at the thread's `path` and current `line` — or, when `line` is null (an outdated or file-level thread), its `originalLine`, falling back to `1` when that is null too; publish anchors existing findings on their thread;
    - `fixed` → an entry in `resolved` with a one-line note;
    - `dismissed` (a human reply gives a reasonable rebuttal or an accepted trade-off) → an entry in `dismissed` with the reason.
    Leave threads already marked `isResolved` alone: never list them anywhere. No thread may be both standing and resolved. A kept candidate that duplicates a standing thread becomes that existing finding, not a new one.

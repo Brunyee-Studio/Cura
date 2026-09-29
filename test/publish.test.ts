@@ -22,6 +22,8 @@ interface ThreadNode {
   isOutdated: boolean;
   path: string;
   line: number | null;
+  originalLine: number | null;
+  subjectType: 'LINE' | 'FILE';
   comments: { nodes: { databaseId: number; url: string; body: string; author: { login: string } | null }[] };
 }
 
@@ -29,15 +31,17 @@ function threadNode(
   id: string,
   commentId: number,
   f: Finding,
-  over: { isResolved?: boolean; line?: number | null; body?: string } = {},
+  over: { isResolved?: boolean; isOutdated?: boolean; line?: number | null; originalLine?: number | null; subjectType?: 'LINE' | 'FILE'; body?: string } = {},
 ): ThreadNode {
   const body = over.body ?? renderFindingComment(f, { anchor: { kind: 'line', path: f.path, line: f.line, snapped: false } });
   return {
     id,
     isResolved: over.isResolved ?? false,
-    isOutdated: false,
+    isOutdated: over.isOutdated ?? false,
     path: f.path,
     line: over.line === undefined ? f.line : over.line,
+    originalLine: over.originalLine === undefined ? f.line : over.originalLine,
+    subjectType: over.subjectType ?? 'LINE',
     comments: { nodes: [{ databaseId: commentId, url: `https://github.com/o/r/pull/7#discussion_r${commentId}`, body, author: { login: 'github-actions' } }] },
   };
 }
@@ -307,6 +311,54 @@ describe('publish', () => {
     const patches = rest('PATCH', '/pulls/comments/');
     expect(patches).toHaveLength(1);
     expect((patches[0].body as { body: string }).body).toContain('```suggestion\nfixed();\n```');
+  });
+
+  describe('existing threads without a current line', () => {
+    // A file-level comment posted for a finding then at line 42; the lead now reports it at originalLine / 1.
+    const posted = finding({ status: 'existing', thread_id: 'RT_F', line: 42, suggestion: 'fix();' });
+    const fileBody = renderFindingComment(posted, { anchor: { kind: 'file', path: posted.path } });
+    const fileThread = () => threadNode('RT_F', 301, posted, { line: null, originalLine: null, subjectType: 'FILE', body: fileBody });
+
+    test('unchanged finding on a FILE thread is not edited', async () => {
+      const { gh, rest } = fakeGitHub({ threads: [[fileThread()]] });
+      await run(gh, { review: review({ findings: [{ ...posted, line: 1 }] }) });
+      expect(rest('PATCH', '/pulls/comments/')).toEqual([]);
+    });
+
+    test('changed finding on a FILE thread is edited, keeping the original cite', async () => {
+      const { gh, rest } = fakeGitHub({ threads: [[fileThread()]] });
+      await run(gh, { review: review({ findings: [{ ...posted, line: 1, body: 'Now worse.' }] }) });
+      const patches = rest('PATCH', '/pulls/comments/');
+      expect(patches).toHaveLength(1);
+      expect(patches[0].path).toBe('/repos/o/r/pulls/comments/301');
+      const body = (patches[0].body as { body: string }).body;
+      expect(body).toContain('`src/a.ts:42` — Now worse.');
+      expect(body).not.toContain('suggestion');
+    });
+
+    // A line comment posted at line 12 with a suggestion; later commits made it outdated.
+    const onLine = finding({ status: 'existing', thread_id: 'RT_O', suggestion: 'return items.length;' });
+    const lineBody = renderFindingComment(onLine, { anchor: { kind: 'line', path: onLine.path, line: 12, snapped: false } });
+    const outdated = () => threadNode('RT_O', 401, onLine, { line: null, originalLine: 12, isOutdated: true, body: lineBody });
+
+    test('unchanged finding on an outdated LINE thread is not edited', async () => {
+      const { gh, rest } = fakeGitHub({ threads: [[outdated()]] });
+      await run(gh, { review: review({ findings: [onLine] }) });
+      expect(rest('PATCH', '/pulls/comments/')).toEqual([]);
+    });
+
+    test('changed finding on an outdated LINE thread is edited as a snapped line comment (no suggestion, no cite)', async () => {
+      const { gh, rest } = fakeGitHub({ threads: [[outdated()]] });
+      const changed = { ...onLine, body: 'Still skips the last item.' };
+      await run(gh, { review: review({ findings: [changed] }) });
+      expect(rest('PATCH', '/pulls/comments/')).toEqual([
+        {
+          method: 'PATCH',
+          path: '/repos/o/r/pulls/comments/401',
+          body: { body: renderFindingComment(changed, { anchor: { kind: 'line', path: 'src/a.ts', line: 12, snapped: true } }) },
+        },
+      ]);
+    });
   });
 
   test('existing finding with a changed severity edits its root comment', async () => {

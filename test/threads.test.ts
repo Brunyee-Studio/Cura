@@ -34,6 +34,7 @@ describe('fetchThreads', () => {
     const threads = await fetchThreads(gh, repo, 7, 'github-actions[bot]');
     expect(graphql).toHaveBeenCalledTimes(1);
     expect(graphql.mock.calls[0][1]).toEqual({ owner: 'o', name: 'r', pr: 7, after: null });
+    expect(graphql.mock.calls[0][0]).toMatch(/\bline originalLine subjectType\b/);
     expect(threads).toEqual([
       {
         id: 'RT_1',
@@ -41,6 +42,8 @@ describe('fetchThreads', () => {
         url: 'https://github.com/o/r/pull/7#discussion_r101',
         path: 'src/a.ts',
         line: 12,
+        originalLine: 12,
+        subjectType: 'LINE',
         isResolved: false,
         isOutdated: false,
         body: '**[P1 · correctness] Off by one**\n\nLoop skips the last item.',
@@ -53,6 +56,8 @@ describe('fetchThreads', () => {
         url: 'https://github.com/o/r/pull/7#discussion_r201',
         path: 'README.md',
         line: null,
+        originalLine: 3,
+        subjectType: 'LINE',
         isResolved: true,
         isOutdated: true,
         body: '**[P2 · docs] Typo**\n\nSpelling.',
