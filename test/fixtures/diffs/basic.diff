@@ -1,0 +1,13 @@
+diff --git a/src/basic.ts b/src/basic.ts
+index c4352f8..cabfd0d 100644
+--- a/src/basic.ts
++++ b/src/basic.ts
+@@ -10,4 +10,6 @@ line 9
+ line 10
+-line 11
+-line 12
++line 11 changed
++line 12 changed
++inserted A
++inserted B
+ line 13

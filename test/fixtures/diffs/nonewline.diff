@@ -1,0 +1,13 @@
+diff --git a/src/nonl.txt b/src/nonl.txt
+index b9e9ab4..b8d2680 100644
+--- a/src/nonl.txt
++++ b/src/nonl.txt
+@@ -1,3 +1,4 @@
+ alpha
+-beta
+-gamma
+\ No newline at end of file
++BETA
++gamma
++delta
+\ No newline at end of file

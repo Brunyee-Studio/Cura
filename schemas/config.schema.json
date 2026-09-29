@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cura consumer config (.github/cura.json)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "instructions": { "type": "string" },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "paths"],
+        "properties": {
+          "name": { "type": "string" },
+          "paths": { "type": "array", "items": { "type": "string" } },
+          "focus": { "type": "string" },
+          "context": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "ignore": { "type": "array", "items": { "type": "string" } },
+    "min_severity": { "type": "string", "enum": ["P0", "P1", "P2"] }
+  }
+}

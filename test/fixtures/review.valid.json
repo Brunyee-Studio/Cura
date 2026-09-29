@@ -1,0 +1,35 @@
+{
+  "summary": "Adds a retry wrapper around the GitHub client.",
+  "risk_note": "Low risk: the change is isolated to the HTTP layer.",
+  "scopes": [
+    { "name": "http", "files": ["src/github.ts"], "reviewer_notes": "Checked callers of request()." }
+  ],
+  "files": [{ "path": "src/github.ts", "overview": "Wraps fetch with retry and backoff." }],
+  "diagram": "",
+  "findings": [
+    {
+      "status": "new",
+      "severity": "P1",
+      "category": "correctness",
+      "path": "src/github.ts",
+      "line": 42,
+      "start_line": 40,
+      "title": "Retry ignores retry-after",
+      "body": "The backoff uses a fixed delay even when the response carries `retry-after`.",
+      "suggestion": "const delay = retryAfter ?? 2 ** attempt * 1000;"
+    },
+    {
+      "status": "existing",
+      "thread_id": "PRRT_abc",
+      "severity": "P2",
+      "category": "docs",
+      "path": "src/github.ts",
+      "line": 10,
+      "title": "Undocumented export",
+      "body": "Document the retry policy."
+    }
+  ],
+  "resolved": [{ "thread_id": "PRRT_old", "note": "Fixed in this push." }],
+  "dismissed": [],
+  "discarded": [{ "location": "src/github.ts:5", "candidate": "Unused import", "reason": "Used by type." }]
+}

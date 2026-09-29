@@ -65,7 +65,7 @@ TypeScript runs directly on Node 24 (type stripping; erasable syntax only — no
 | `rules` | no | `.opencodereview/rule.json` if present | OCR rule file (path in the consumer repo) |
 | `config` | no | `.github/cura.json` | Cura config file (path in the consumer repo) |
 | `pr` | no | from event | PR number (required for `issue_comment` / `workflow_dispatch` callers that don't carry one) |
-| `model` | no | Claude Code default | Model override |
+| `model` | no | `claude-opus-5-5` | Model for the lead and subagents |
 | `ocr_version` | no | pinned in action | OCR release to install when `ocr` is not on `PATH` |
 | `max_files_per_scope` | no | `12` | Chunk cap (files) |
 | `max_lines_per_scope` | no | `1500` | Chunk cap (changed lines) |
@@ -128,7 +128,7 @@ install ─► context ─► facts ─► Claude lead agent ──(Agent tool, 
 
 ## 6. Agents
 
-All three prompts live in `agents/` and are rendered with run values by `cli.ts` (the lead prompt) or passed via `--agents` JSON built from `agents/*.md` (subagents). Model is left to Claude Code's default unless `model` is set.
+All three prompts live in `agents/` and are rendered with run values by `cli.ts` (the lead prompt) or passed via `--agents` JSON built from `agents/*.md` (subagents). The `model` input defaults to `claude-opus-5-5` (Opus 5.5) and is applied to the lead (`--model`) and every subagent definition; consumers can override it.
 
 ### Lead agent (orchestrator)
 

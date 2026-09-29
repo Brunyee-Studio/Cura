@@ -1,0 +1,20 @@
+diff --git a/lib/old-name.ts b/lib/new-name.ts
+similarity index 90%
+rename from lib/old-name.ts
+rename to lib/new-name.ts
+index 2878bb6..60a6c58 100644
+--- a/lib/old-name.ts
++++ b/lib/new-name.ts
+@@ -12,7 +12,7 @@ row 11
+ row 12
+ row 13
+ row 14
+-row 15
++row 15 renamed-edit
+ row 16
+ row 17
+ row 18
+diff --git a/src/multi.ts b/src/multi2.ts
+similarity index 100%
+rename from src/multi.ts
+rename to src/multi2.ts
