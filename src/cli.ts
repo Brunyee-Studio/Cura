@@ -36,6 +36,8 @@ interface RunState {
   reviewableCount: number;
   base: string;
   headSha: string;
+  maxFiles: number;
+  maxLines: number;
 }
 
 const USAGE = `usage: node src/cli.ts <command>
@@ -157,7 +159,7 @@ async function context(env: Env, io: Io, d: Deps): Promise<void> {
     configPath: env.CURA_CONFIG || '.github/cura.json',
     botLogin: botLogin(env),
   });
-  const state: RunState = { ...result, base, headSha };
+  const state: RunState = { ...result, base, headSha, ...caps(env) };
   writeFileSync(join(ctxDir, 'context.json'), `${JSON.stringify(state, null, 2)}\n`);
   const pr = readJson<{ isCrossRepository: boolean }>(ctxDir, 'pr.json');
 
@@ -177,7 +179,7 @@ function prompt(env: Env, io: Io): void {
   const ctxDir = ctxFromEnv(env);
   const state = readJson<RunState>(ctxDir, 'context.json');
   const curaDir = resolve(import.meta.dirname, '..');
-  const { maxFiles, maxLines } = caps(env);
+  const { maxFiles, maxLines } = state;
 
   const lead = renderLeadPrompt({
     repo: env.GITHUB_REPOSITORY ?? '',
@@ -220,8 +222,10 @@ function parseCheckArgs(args: string[], env: Env): { ctxDir: string; plan: boole
       return null;
     }
   }
+  if (env.CURA_CTX && ctxDir !== undefined && ctxDir !== env.CURA_CTX) return null;
   ctxDir ??= env.CURA_CTX;
-  if (!ctxDir || !isAbsolute(ctxDir)) return null;
+  // Only a canonical absolute path: no `..`, `.` or trailing-slash variants of the pinned dir.
+  if (!ctxDir || !isAbsolute(ctxDir) || resolve(ctxDir) !== ctxDir) return null;
   return { ctxDir, plan };
 }
 
@@ -235,14 +239,14 @@ async function check(args: string[], env: Env, io: Io): Promise<void> {
     draft = JSON.parse(await io.stdin());
   } catch (err) {
     const message = `json.invalid stdin is not valid JSON: ${(err as Error).message}`;
-    return plan ? failPlan(ctxDir, env, io, message) : fail(io, message);
+    return plan ? failPlan(ctxDir, io, message) : fail(io, message);
   }
 
   if (plan) {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
-    const errors = checkPlan(draft, { ...planCaps(ctxDir, env), facts });
+    const errors = checkPlan(draft, { ...planCaps(ctxDir), facts });
     if (errors.length === 0) return ok(io);
-    return failPlan(ctxDir, env, io, formatErrors(errors));
+    return failPlan(ctxDir, io, formatErrors(errors));
   }
 
   const errors = checkReview(draft, loadFacts(ctxDir));
@@ -260,21 +264,22 @@ function fail(io: Io, message: string): void {
   io.exit(1);
 }
 
-function failPlan(ctxDir: string, env: Env, io: Io, message: string): void {
+function failPlan(ctxDir: string, io: Io, message: string): void {
   const attemptsFile = join(ctxDir, 'plan-attempts');
   const attempts = (existsSync(attemptsFile) ? Number(readFileSync(attemptsFile, 'utf8')) || 0 : 0) + 1;
   writeFileSync(attemptsFile, String(attempts));
   io.stdout(message);
   if (attempts >= PLAN_FALLBACK_AFTER) {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
-    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir, env)))}`);
+    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir)))}`);
   }
   io.exit(1);
 }
 
-function planCaps(ctxDir: string, env: Env) {
+function planCaps(ctxDir: string) {
   const config = readJson<CuraConfig>(ctxDir, 'config.json');
-  return { configScopes: config.scopes ?? [], ...caps(env) };
+  const { maxFiles, maxLines } = readJson<RunState>(ctxDir, 'context.json');
+  return { configScopes: config.scopes ?? [], maxFiles, maxLines };
 }
 
 // ── publish ──────────────────────────────────────────────────────────────────
@@ -291,13 +296,13 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   const pr = prFromEnv(env);
   const runUrl = env.RUN_URL ?? '';
   const raw = (env.REVIEW ?? '').trim();
-  const outcome = env.AGENT_OUTCOME;
+  const agentSucceeded = env.AGENT_OUTCOME === 'success';
   const skipAgent = state.reviewableCount === 0;
 
   let review: unknown;
   if (skipAgent && raw === '') {
     review = EMPTY_REVIEW;
-  } else if (raw !== '' && (!outcome || outcome === 'success')) {
+  } else if (raw !== '' && agentSucceeded) {
     try {
       review = JSON.parse(raw);
     } catch {

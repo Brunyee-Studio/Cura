@@ -71,9 +71,18 @@ afterEach(() => {
 const writeCtx = (name: string, value: unknown) => writeFileSync(join(ctx, name), JSON.stringify(value));
 
 /** Lays down the ctx files `context` would produce for a one-file PR (src/a.ts, lines 1–20 added). */
-function seedCtx(over: { reviewableCount?: number; facts?: unknown[]; config?: unknown } = {}) {
+function seedCtx(over: { reviewableCount?: number; facts?: unknown[]; config?: unknown; maxFiles?: number } = {}) {
   const facts = over.facts ?? [{ path: 'src/a.ts', status: 'modified', language: 'typescript', added: 20, removed: 0, dir: 'src' }];
-  writeCtx('context.json', { mode: 'full', prevSha: null, summaryId: null, reviewableCount: over.reviewableCount ?? 1, base: 'main', headSha: HEAD });
+  writeCtx('context.json', {
+    mode: 'full',
+    prevSha: null,
+    summaryId: null,
+    reviewableCount: over.reviewableCount ?? 1,
+    base: 'main',
+    headSha: HEAD,
+    maxFiles: over.maxFiles ?? 12,
+    maxLines: 1500,
+  });
   writeCtx('facts.json', facts);
   writeCtx('preview.json', {
     reviewable_files: [{ path: 'src/a.ts', status: 'modified', insertions: 20, deletions: 0 }],
@@ -175,12 +184,31 @@ describe('check', () => {
     [['check', '--ctx=CTX']],
     [['check', '--ctx', 'relative/dir']],
     [['check']],
+    [['check', '--ctx', 'CTX/../ctx']],
+    [['check', '--ctx', 'CTX/']],
   ])('rejects %j with a usage error (exit 2)', async (argv) => {
     seedCtx();
     const { io, text, code } = makeIo(JSON.stringify(review()));
     await main(argv.map((a) => a.replace('CTX', ctx)), {}, io);
     expect(text()).toContain('usage');
     expect(code()).toBe(2);
+  });
+
+  test('rejects --ctx that differs from CURA_CTX (exit 2)', async () => {
+    seedCtx();
+    const other = join(root, 'other');
+    mkdirSync(other);
+    const { io, text, code } = makeIo(JSON.stringify(review()));
+    await main(['check', '--ctx', other], { CURA_CTX: ctx }, io);
+    expect(text()).toContain('usage');
+    expect(code()).toBe(2);
+  });
+
+  test('accepts --ctx equal to CURA_CTX', async () => {
+    seedCtx();
+    const { io, code } = makeIo(JSON.stringify(review()));
+    await main(['check', '--ctx', ctx], { CURA_CTX: ctx }, io);
+    expect(code()).toBe(0);
   });
 
   test('--plan may come before --ctx', async () => {
@@ -212,8 +240,9 @@ describe('check', () => {
     });
   });
 
-  test('plan caps come from CURA_MAX_FILES', async () => {
+  test('plan caps come from context.json, not env', async () => {
     seedCtx({
+      maxFiles: 1,
       facts: [
         { path: 'src/a.ts', status: 'modified', language: 'typescript', added: 1, removed: 0, dir: 'src' },
         { path: 'src/b.ts', status: 'modified', language: 'typescript', added: 1, removed: 0, dir: 'src' },
@@ -221,7 +250,7 @@ describe('check', () => {
     });
     const plan = { scopes: [{ name: 'src', files: ['src/a.ts', 'src/b.ts'], focus: 'x', context: [] }] };
     const { io, text, code } = makeIo(JSON.stringify(plan));
-    await main(['check', '--ctx', ctx, '--plan'], { CURA_MAX_FILES: '1' }, io);
+    await main(['check', '--ctx', ctx, '--plan'], { CURA_MAX_FILES: '50' }, io);
     expect(text()).toContain('plan.too_many_files');
     expect(code()).toBe(1);
   });
@@ -313,6 +342,26 @@ describe('publish', () => {
     expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
   });
 
+  test('unset AGENT_OUTCOME fails closed even with a valid REVIEW', async () => {
+    seedCtx();
+    const { gh, calls } = fakeGitHub();
+    const { io, code } = makeIo();
+    const { AGENT_OUTCOME: _omit, ...rest } = env({ REVIEW: JSON.stringify(review()) });
+    await main(['publish'], rest, io, { createGitHub: () => gh });
+    expect(code()).toBe(1);
+    expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
+  });
+
+  test('non-JSON REVIEW marks the summary failed', async () => {
+    seedCtx();
+    const { gh, calls } = fakeGitHub();
+    const { io, code } = makeIo();
+    await main(['publish'], env({ REVIEW: 'not json {' }), io, { createGitHub: () => gh });
+    expect(code()).toBe(1);
+    expect(outputs()).toContain('score=0\n');
+    expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
+  });
+
   test('skips agent when nothing reviewable: empty REVIEW publishes a 5/5 summary', async () => {
     seedCtx({ reviewableCount: 0, facts: [] });
     const { gh, calls } = fakeGitHub();
@@ -376,7 +425,28 @@ describe('context', () => {
       reviewableCount: 0,
       base: 'main',
       headSha: HEAD,
+      maxFiles: 12,
+      maxLines: 1500,
     });
+  });
+
+  test('persists plan caps from CURA_MAX_FILES / CURA_MAX_LINES into context.json', async () => {
+    const { gh } = fakeGitHub({ pr: PR, comments: [] });
+    const { io } = makeIo();
+    const env = {
+      CURA_CTX: ctx,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_WORKSPACE: root,
+      GITHUB_TOKEN: 't',
+      GITHUB_REPOSITORY: 'o/r',
+      CURA_PR: '7',
+      CURA_BASE: 'main',
+      CURA_HEAD_SHA: HEAD,
+      CURA_MAX_FILES: '4',
+      CURA_MAX_LINES: '300',
+    };
+    await main(['context'], env, io, { createGitHub: () => gh, exec });
+    expect(JSON.parse(readFileSync(join(ctx, 'context.json'), 'utf8'))).toMatchObject({ maxFiles: 4, maxLines: 300 });
   });
 
   test('rejects a relative CURA_CTX', async () => {
@@ -389,12 +459,13 @@ describe('prompt', () => {
   test('writes the lead prompt and agents, and emits multi-line outputs with a delimiter', async () => {
     seedCtx();
     const { io, code } = makeIo();
-    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7' }, io);
+    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7', CURA_MAX_FILES: '99' }, io);
     expect(code()).toBe(0);
 
     const prompt = readFileSync(join(ctx, 'lead-prompt.md'), 'utf8');
     expect(prompt).toContain('PR NUMBER: 7');
     expect(prompt).toContain(`CONTEXT DIR: ${ctx}`);
+    expect(prompt).toContain('at most 12 files and at most 1500 changed lines');
     expect(Object.keys(JSON.parse(readFileSync(join(ctx, 'agents.json'), 'utf8')))).toEqual(['scope-reviewer', 'verifier']);
 
     const out = outputs();
