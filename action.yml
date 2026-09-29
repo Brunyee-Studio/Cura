@@ -214,7 +214,7 @@ runs:
           git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
         fi
         git config --local --unset-all credential.helper || true
-        headers="$(git config --local --name-only --get-regexp '^http\..*\.extraheader$' || true)"
+        headers="$(git config --local --name-only --get-regexp '^http\.(.+\.)?extraheader$' || true)"
         for key in $headers; do
           git config --local --unset-all "$key" || true
         done

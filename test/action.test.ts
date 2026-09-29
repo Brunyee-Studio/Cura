@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { runBlocks } from './yaml-lines.ts';
@@ -92,6 +94,32 @@ describe('action.yml', () => {
     expect(cleanup.text).toContain('git remote set-url origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"');
     expect(cleanup.text).toContain('--unset-all credential.helper');
     expect(cleanup.text).toContain('extraheader');
+  });
+
+  test('the credential cleanup removes plain and URL-scoped extraheaders, helpers and the token URL', () => {
+    const cleanup = steps().find((s) => s.key === 'Remove Claude Code git credentials')!.text.split('\n');
+    const script = runBlocks(cleanup)[0]!.map((l) => l.trim()).join('\n');
+    const repo = mkdtempSync(join(tmpdir(), 'cura-action-'));
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+    try {
+      git('init', '-q');
+      git('remote', 'add', 'origin', 'https://x-access-token:SECRET@github.com/o/r.git');
+      git('config', '--local', 'http.extraheader', 'AUTHORIZATION: basic SECRET');
+      git('config', '--local', 'http.https://github.com/.extraheader', 'AUTHORIZATION: basic SECRET');
+      git('config', '--local', 'credential.helper', 'store');
+      git('config', '--local', 'http.sslVerify', 'true');
+      execFileSync('bash', ['-c', script], {
+        cwd: repo,
+        env: { ...process.env, GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r' },
+      });
+      const config = git('config', '--local', '--list');
+      expect(config).not.toContain('SECRET');
+      expect(config).not.toMatch(/extraheader|credential\.helper/);
+      expect(config).toContain('http.sslverify=true');
+      expect(git('remote', 'get-url', 'origin').trim()).toBe('https://github.com/o/r.git');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   test('pins third-party actions by commit SHA', () => {
