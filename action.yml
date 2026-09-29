@@ -1,0 +1,210 @@
+name: Cura
+description: Scoped AI pull request review with Claude Code and OpenCodeReview — one summary comment, inline findings, and a 1–5 merge-safety score.
+author: Brunyee Studio
+branding:
+  icon: check-circle
+  color: purple
+
+# The caller must check out the PR head (not the merge commit) with
+# `fetch-depth: 0` and `persist-credentials: false` before this action runs:
+# inline comment lines must match the PR diff, the review diffs against the
+# base branch's history, and the reviewer can read the workspace, so the token
+# must stay out of .git/config.
+inputs:
+  claude_code_oauth_token:
+    description: Claude Code subscription token.
+    required: true
+  github_token:
+    description: 'Token with `contents: read`, `pull-requests: write` and `issues: write`.'
+    required: false
+    default: ${{ github.token }}
+  rules:
+    description: OCR rule file, read from the PR's base branch (skipped when absent there).
+    required: false
+    default: .opencodereview/rule.json
+  config:
+    description: Cura config file, read from the PR's base branch.
+    required: false
+    default: .github/cura.json
+  pr:
+    description: PR number. Defaults to the triggering pull_request or issue_comment event's PR.
+    required: false
+    default: ''
+  model:
+    description: Model override for the lead and its subagents. Defaults to Claude Code's default.
+    required: false
+    default: ''
+  ocr_version:
+    description: OpenCodeReview release to install when `ocr` is not on PATH. Defaults to the version pinned in Cura.
+    required: false
+    default: ''
+  max_files_per_scope:
+    description: Chunk cap — files per review scope.
+    required: false
+    default: '12'
+  max_lines_per_scope:
+    description: Chunk cap — changed lines (added + removed) per review scope.
+    required: false
+    default: '1500'
+  fail_on:
+    description: Fail the step when an open finding at or above this severity exists (`P0`, `P1` or `none`).
+    required: false
+    default: none
+  allow_forks:
+    description: Review cross-repository PRs. Unsafe on self-hosted runners.
+    required: false
+    default: 'false'
+  bot_login:
+    description: Author login whose marked threads Cura owns (set it when `github_token` is not the default token).
+    required: false
+    default: github-actions
+
+outputs:
+  score:
+    description: Merge-safety score, 1 (unsafe) to 5 (no findings); 0 when the review failed.
+    value: ${{ steps.publish.outputs.score }}
+  findings:
+    description: Number of open findings.
+    value: ${{ steps.publish.outputs.findings }}
+  summary_url:
+    description: URL of the Cura summary comment.
+    value: ${{ steps.publish.outputs.summary_url }}
+
+runs:
+  using: composite
+  steps:
+    # Base, head and fork status come from the API so comment- and
+    # dispatch-triggered runs review the same head and base as push-triggered
+    # ones. Every event-derived value reaches the script through env, never by
+    # expression interpolation into the script text.
+    - name: Resolve pull request
+      id: pr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ inputs.pr || github.event.pull_request.number || github.event.issue.number }}
+        ALLOW_FORKS: ${{ inputs.allow_forks }}
+      run: |
+        set -euo pipefail
+        if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::Cura needs a pull request number; pass the 'pr' input when the triggering event carries none (got '$PR')."
+          exit 1
+        fi
+        fields="$(gh pr view "$PR" --repo "$REPO" --json baseRefName,headRefOid,isCrossRepository \
+          --jq '[.baseRefName, .headRefOid, .isCrossRepository] | @tsv')"
+        IFS=$'\t' read -r base head_sha cross <<<"$fields"
+
+        # Fork code must never run with this job's write token and secrets
+        # (reachable on self-hosted runners via a member-triggered re-run).
+        if [[ "$cross" == true && "$ALLOW_FORKS" != true ]]; then
+          echo "::error::Cura does not review pull requests from forks; set allow_forks: 'true' to override (unsafe on self-hosted runners)."
+          exit 1
+        fi
+        # The base name is interpolated into git refs and the reviewer's tool
+        # rules; a ref such as `x),Bash,Read(` is valid git but must not get there.
+        if [[ ! "$base" =~ ^[A-Za-z0-9._/-]+$ || "$base" == -* || "$base" == *..* ]]; then
+          echo "::error::Unsupported base branch name: '$base'."
+          exit 1
+        fi
+        if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::Unexpected head SHA from the GitHub API: '$head_sha'."
+          exit 1
+        fi
+
+        actual="$(git rev-parse HEAD 2>/dev/null || true)"
+        if [[ "$actual" != "$head_sha" ]]; then
+          echo "::error::HEAD is '${actual:-<no git checkout>}' but PR #$PR's head is $head_sha. Check out the PR head before Cura: actions/checkout with ref: <head sha>, fetch-depth: 0 and persist-credentials: false."
+          exit 1
+        fi
+
+        # The one-off auth header is passed on the command line only, so the
+        # token is never written to .git/config where the reviewer could read it.
+        if ! git rev-parse --verify --quiet "refs/remotes/origin/$base" >/dev/null; then
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c http.extraheader="AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/heads/$base:refs/remotes/origin/$base"
+        fi
+
+        {
+          echo "number=$PR"
+          echo "base=$base"
+          echo "head_sha=$head_sha"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Set up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: 24
+
+    - name: Install OpenCodeReview
+      shell: bash
+      env:
+        CURA_OCR_VERSION: ${{ inputs.ocr_version }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/cli.ts" install
+
+    - name: Gather review context
+      id: context
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        CURA_CTX: ${{ runner.temp }}/cura
+        CURA_PR: ${{ steps.pr.outputs.number }}
+        CURA_BASE: ${{ steps.pr.outputs.base }}
+        CURA_HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        CURA_RULES: ${{ inputs.rules }}
+        CURA_CONFIG: ${{ inputs.config }}
+        CURA_MAX_FILES: ${{ inputs.max_files_per_scope }}
+        CURA_MAX_LINES: ${{ inputs.max_lines_per_scope }}
+        CURA_BOT_LOGIN: ${{ inputs.bot_login }}
+      run: |
+        rm -rf "$CURA_CTX"
+        node "$GITHUB_ACTION_PATH/src/cli.ts" context
+
+    - name: Render review prompt
+      id: prompt
+      if: steps.context.outputs.skip_agent != 'true'
+      shell: bash
+      env:
+        CURA_CTX: ${{ runner.temp }}/cura
+        CURA_PR: ${{ steps.pr.outputs.number }}
+        CURA_MODEL: ${{ inputs.model }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/cli.ts" prompt
+
+    # The session reads untrusted PR content, so it gets no GitHub tools and
+    # Bash is pinned to the exact command forms the prompt uses (see
+    # src/agents.ts). It returns structured output only; the publish step does
+    # every GitHub write. A failed or cancelled session publishes a failure
+    # summary instead of a review.
+    - name: Claude Code review
+      id: claude
+      if: steps.context.outputs.skip_agent != 'true'
+      continue-on-error: true
+      uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        github_token: ${{ inputs.github_token }}
+        prompt: ${{ steps.prompt.outputs.prompt }}
+        claude_args: ${{ steps.prompt.outputs.claude_args }}
+
+    # Runs even when the review failed so the summary comment reports it. It
+    # fails closed: anything but a successful agent outcome publishes a failure.
+    - name: Publish review
+      id: publish
+      if: always() && steps.context.outcome == 'success'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        CURA_CTX: ${{ runner.temp }}/cura
+        CURA_PR: ${{ steps.pr.outputs.number }}
+        CURA_FAIL_ON: ${{ inputs.fail_on }}
+        CURA_BOT_LOGIN: ${{ inputs.bot_login }}
+        CURA_VERSION: ${{ github.action_ref || 'dev' }}
+        REVIEW: ${{ steps.claude.outputs.structured_output }}
+        AGENT_OUTCOME: ${{ steps.claude.outcome }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/cli.ts" publish
