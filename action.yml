@@ -221,6 +221,10 @@ runs:
 
     # Runs even when the review failed so the summary comment reports it. It
     # fails closed: anything but a successful agent outcome publishes a failure.
+    # The review is read from claude-code-action's execution file: a large
+    # structured_output passed through env exceeds Linux's 128 KiB per-string
+    # limit and the step would not start, so REVIEW is set only when that file
+    # output is absent.
     - name: Publish review
       id: publish
       if: always() && steps.context.outcome == 'success'
@@ -232,7 +236,8 @@ runs:
         CURA_FAIL_ON: ${{ inputs.fail_on }}
         CURA_BOT_LOGIN: ${{ inputs.bot_login }}
         CURA_VERSION: ${{ github.action_ref || 'dev' }}
-        REVIEW: ${{ steps.claude.outputs.structured_output }}
+        CURA_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+        REVIEW: ${{ steps.claude.outputs.execution_file == '' && steps.claude.outputs.structured_output || '' }}
         AGENT_OUTCOME: ${{ steps.claude.outcome }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |

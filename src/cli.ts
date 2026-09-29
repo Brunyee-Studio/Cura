@@ -34,6 +34,7 @@ interface RunState {
   prevSha: string | null;
   summaryId: number | null;
   reviewableCount: number;
+  deletedCount: number;
   base: string;
   headSha: string;
   maxFiles: number;
@@ -47,7 +48,7 @@ commands:
   context                       gather PR context into $CURA_CTX
   prompt                        render the lead prompt, agents and tool rules
   check [--ctx <dir>] [--plan]  validate a review (or, with --plan, a scope plan) read from stdin
-  publish                       publish the review from $REVIEW to the PR
+  publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
   --help                        show this help`;
 
 const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan]';
@@ -148,7 +149,7 @@ async function context(env: Env, io: Io, d: Deps): Promise<void> {
 
   const result = await gatherContext({
     gh: github(env, d),
-    exec: (cmd, args) => d.exec(cmd, args, workspace),
+    exec: (cmd, args, cwd) => d.exec(cmd, args, cwd ?? workspace),
     repo: repoFromEnv(env),
     pr: prFromEnv(env),
     base,
@@ -169,7 +170,7 @@ async function context(env: Env, io: Io, d: Deps): Promise<void> {
     summary_id: result.summaryId === null ? '' : String(result.summaryId),
     reviewable_count: String(result.reviewableCount),
     cross_repo: String(pr.isCrossRepository),
-    skip_agent: String(result.reviewableCount === 0),
+    skip_agent: String(skipsAgent(state)),
   });
 }
 
@@ -323,19 +324,15 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   const repo = repoFromEnv(env);
   const pr = prFromEnv(env);
   const runUrl = env.RUN_URL ?? '';
-  const raw = (env.REVIEW ?? '').trim();
+  const executionFile = env.CURA_EXECUTION_FILE && existsSync(env.CURA_EXECUTION_FILE) ? env.CURA_EXECUTION_FILE : null;
+  const raw = executionFile === null ? (env.REVIEW ?? '').trim() : '';
   const agentSucceeded = env.AGENT_OUTCOME === 'success';
-  const skipAgent = state.reviewableCount === 0;
 
   let review: unknown;
-  if (skipAgent && raw === '') {
+  if (skipsAgent(state) && executionFile === null && raw === '') {
     review = EMPTY_REVIEW;
-  } else if (raw !== '' && agentSucceeded) {
-    try {
-      review = JSON.parse(raw);
-    } catch {
-      review = undefined;
-    }
+  } else if (agentSucceeded) {
+    review = executionFile === null ? parseJson(raw) : structuredOutputFrom(executionFile);
   }
 
   if (review === undefined) {
@@ -382,6 +379,29 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   if (result.failed || gateHit) return io.exit(1);
 }
 
+/**
+ * The review from claude-code-action's execution file (its SDK message list), derived as upstream derives its
+ * `structured_output` output: the first `result` message, when it succeeded without error. Read from a file
+ * because a large review passed through env exceeds Linux's 128 KiB per-string limit and the step cannot start.
+ */
+function structuredOutputFrom(file: string): unknown {
+  const messages = parseJson(readFileSync(file, 'utf8'));
+  if (!Array.isArray(messages)) return undefined;
+  const result = messages.find((m: { type?: unknown } | null) => m?.type === 'result') as
+    | { subtype?: unknown; is_error?: unknown; structured_output?: unknown }
+    | undefined;
+  if (result?.subtype !== 'success' || result.is_error || !result.structured_output) return undefined;
+  return result.structured_output;
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 function minSeverityFrom(env: Env, ctxDir: string): Severity {
   const value = env.CURA_MIN_SEVERITY || readJson<CuraConfig>(ctxDir, 'config.json').min_severity || 'P2';
   if (!SEVERITIES.has(value)) throw new Error(`CURA_MIN_SEVERITY must be P0, P1 or P2 (got ${value})`);
@@ -394,6 +414,11 @@ function renderUnanchored(findings: Finding[]): string {
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────
+
+/** Nothing to review: a deletion-only PR still runs the agent for the impact analysis of removed code. */
+function skipsAgent(state: RunState): boolean {
+  return state.reviewableCount === 0 && state.deletedCount === 0;
+}
 
 function loadFacts(ctxDir: string) {
   const facts = readJson<FileFact[]>(ctxDir, 'facts.json');

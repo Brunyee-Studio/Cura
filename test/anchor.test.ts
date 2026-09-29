@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { anchorFinding } from '../src/anchor.ts';
+import { parseDiff } from '../src/diff.ts';
 import type { Finding, HunkMap } from '../src/types.ts';
 
 const finding = (over: Partial<Finding>): Finding => ({
@@ -88,7 +89,33 @@ describe('anchorFinding', () => {
   });
 
   test('deleted file is unanchorable', () => {
-    expect(anchorFinding(finding({ path: 'src/gone.ts', line: 1 }), diff)).toEqual({
+    // Real `git diff` and `ocr delegate preview` output for a PR that modifies src/a.ts and deletes src/gone.ts.
+    const realDiff = [
+      'diff --git a/src/a.ts b/src/a.ts',
+      'index cc798ff..72ab60e 100644',
+      '--- a/src/a.ts',
+      '+++ b/src/a.ts',
+      '@@ -1 +1,2 @@',
+      ' export const a = 1;',
+      '+export const b = 2;',
+      'diff --git a/src/gone.ts b/src/gone.ts',
+      'deleted file mode 100644',
+      'index bafc5d9..0000000',
+      '--- a/src/gone.ts',
+      '+++ /dev/null',
+      '@@ -1 +0,0 @@',
+      '-x=1',
+      '',
+    ].join('\n');
+    const preview = {
+      reviewable_files: [{ path: 'src/a.ts', status: 'modified' }],
+      excluded_files: [{ path: 'src/gone.ts', status: 'deleted', exclude_reason: 'deleted' }],
+    };
+    const { hunks: realHunks, addedLines: realAdded } = parseDiff(realDiff);
+    const realPrFiles = new Set([...preview.reviewable_files, ...preview.excluded_files].filter((f) => f.status !== 'deleted').map((f) => f.path));
+    expect(realHunks['src/gone.ts']).toBeUndefined();
+    expect(realPrFiles.has('src/gone.ts')).toBe(false);
+    expect(anchorFinding(finding({ path: 'src/gone.ts', line: 1 }), { hunks: realHunks, addedLines: realAdded, prFiles: realPrFiles })).toEqual({
       kind: 'none',
       reason: 'path not in PR',
     });

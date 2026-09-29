@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { main, type Deps } from '../src/cli.ts';
 import type { GitHub } from '../src/github.ts';
+import { matchGlob } from '../src/plan.ts';
 import type { FileFact, Finding, Review, Thread } from '../src/types.ts';
 import { makeIo } from './io.ts';
 
@@ -112,7 +113,13 @@ function fakeGitHub(headSha: string) {
         return { resolveReviewThread: { thread: { id: thread.id } } } as T;
       }
       calls.push({ method: 'GRAPHQL', path: 'reviewThreads', body: variables });
-      const nodes = threads.map((t) => ({ ...t, isOutdated: false, comments: { nodes: t.comments.map((c) => ({ ...c })) } }));
+      const nodes = threads.map((t) => ({
+        ...t,
+        isOutdated: false,
+        originalLine: t.line,
+        subjectType: 'LINE',
+        comments: { nodes: t.comments.map((c) => ({ ...c })) },
+      }));
       return { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } } } as T;
     },
   };
@@ -125,6 +132,8 @@ const BASE_CALC = lines(20, (i) => `export const n${i} = ${i};`);
 const HEAD_CALC = BASE_CALC.replace('export const n10 = 10;', 'export const n10 = 10 * 2;');
 const NEW_FILE = lines(3, (i) => `export const added${i} = ${i};`);
 const OLD_FILE = lines(4, (i) => `export const old${i} = ${i};`);
+// The PR tries to exclude every file from review through ocr's project rules.
+const HEAD_OCR_RULES = '{"exclude":["**"]}\n';
 
 let root: string;
 let repo: string;
@@ -132,7 +141,7 @@ let ctx: string;
 let outputFile: string;
 let stepSummaryFile: string;
 let headSha: string;
-const ocrCalls: string[][] = [];
+const ocrCalls: { args: string[]; cwd: string; projectRules: string | null }[] = [];
 
 function git(...args: string[]): string {
   const identity = ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
@@ -144,33 +153,52 @@ function write(path: string, content: string): void {
   writeFileSync(join(repo, path), content);
 }
 
-/** `ocr` stand-in returning preview/rule JSON in ocr's real shapes, consistent with the head commit. */
-function fakeOcr(args: string[]): string {
-  ocrCalls.push(args);
+const gitIn = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] });
+
+const STATUS: Record<string, string> = { A: 'added', M: 'modified', D: 'deleted' };
+
+/**
+ * `ocr` stand-in with ocr's real behaviour and output shapes: it diffs the range in its cwd, applies the
+ * `exclude` of the project rules it finds at `<cwd>/.opencodereview/rule.json`, and lists deleted files
+ * under `excluded_files` with exclude_reason "deleted".
+ */
+function fakeOcr(args: string[], cwd: string): string {
+  const rulesFile = join(cwd, '.opencodereview', 'rule.json');
+  const projectRules = existsSync(rulesFile) ? readFileSync(rulesFile, 'utf8') : null;
+  ocrCalls.push({ args, cwd, projectRules });
+  const exclude: string[] = projectRules === null ? [] : ((JSON.parse(projectRules) as { exclude?: string[] }).exclude ?? []);
+
   if (args[0] === 'delegate' && args[1] === 'preview') {
-    return JSON.stringify({
-      reviewable_count: 3,
-      excluded_count: 0,
-      reviewable_files: [
-        { path: 'src/calc.ts', status: 'modified', insertions: 1, deletions: 1 },
-        { path: 'src/new.ts', status: 'added', insertions: 3, deletions: 0 },
-        { path: 'src/old.ts', status: 'deleted', insertions: 0, deletions: 4 },
-      ],
-      excluded_files: [],
-    });
+    const range = [args[args.indexOf('--from') + 1]!, args[args.indexOf('--to') + 1]!].join('...');
+    const numstat = new Map(
+      gitIn(cwd, 'diff', '--no-renames', '--numstat', range).trim().split('\n').map((l) => {
+        const [added, removed, path] = l.split('\t');
+        return [path!, { insertions: Number(added), deletions: Number(removed) }];
+      }),
+    );
+    const reviewable: unknown[] = [];
+    const excluded: unknown[] = [];
+    for (const line of gitIn(cwd, 'diff', '--no-renames', '--name-status', range).trim().split('\n')) {
+      const [code, path] = line.split('\t') as [string, string];
+      const file = { path, status: STATUS[code], ...numstat.get(path)! };
+      if (exclude.some((pattern) => matchGlob(pattern, path))) excluded.push({ ...file, exclude_reason: 'user_exclude' });
+      else if (code === 'D') excluded.push({ ...file, exclude_reason: 'deleted' });
+      else reviewable.push(file);
+    }
+    return JSON.stringify({ reviewable_count: reviewable.length, excluded_count: excluded.length, reviewable_files: reviewable, excluded_files: excluded });
   }
   if (args[0] === 'delegate' && args[1] === 'rule') {
-    return JSON.stringify({
-      groups: [{ group_id: 'ts', source: 'default', pattern: '**/*.ts', files: ['src/calc.ts', 'src/new.ts'], rule: 'Keep exported constants stable.' }],
-    });
+    const files = args.slice(args.indexOf('json') + 1);
+    return JSON.stringify({ groups: [{ group_id: 1, source: 'system', pattern: '**', files, rule: 'Keep exported constants stable.' }] });
   }
   throw new Error(`unexpected ocr call: ${args.join(' ')}`);
 }
 
 const exec: Deps['exec'] = (cmd, args, cwd) => {
-  expect(cwd).toBe(repo);
-  if (cmd === 'git') return execFileSync('git', args, { cwd, encoding: 'utf8', env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] });
-  if (cmd === 'ocr') return fakeOcr(args);
+  // ocr runs in the base-rules worktree Cura creates under the ctx dir; git in the PR checkout.
+  expect(cwd).toBe(cmd === 'ocr' ? join(ctx, 'ocr-worktree') : repo);
+  if (cmd === 'git') return gitIn(cwd, ...args);
+  if (cmd === 'ocr') return fakeOcr(args, cwd);
   throw new Error(`unexpected exec: ${cmd}`);
 };
 
@@ -192,6 +220,7 @@ beforeAll(() => {
   git('switch', '-q', '-c', 'feature');
   write('src/calc.ts', HEAD_CALC);
   write('src/new.ts', NEW_FILE);
+  write('.opencodereview/rule.json', HEAD_OCR_RULES);
   unlinkSync(join(repo, 'src/old.ts'));
   git('add', '-A');
   git('commit', '-q', '-m', 'double n10');
@@ -262,8 +291,9 @@ function review(over: Partial<Review>): Review {
   return {
     summary: 'Doubles n10, adds new constants and removes the old module.',
     risk_note: '',
-    scopes: [{ name: 'src', files: ['src/calc.ts', 'src/new.ts'], reviewer_notes: 'Checked every n10 caller.' }],
+    scopes: [{ name: 'src', files: ['.opencodereview/rule.json', 'src/calc.ts', 'src/new.ts'], reviewer_notes: 'Checked every n10 caller.' }],
     files: [
+      { path: '.opencodereview/rule.json', overview: 'Tries to exclude everything from review.' },
       { path: 'src/calc.ts', overview: 'n10 doubled.' },
       { path: 'src/new.ts', overview: 'New constants.' },
       { path: 'src/old.ts', overview: 'Removed.' },
@@ -292,10 +322,23 @@ describe('end-to-end dry run', () => {
 
     const context = await step(['context'], deps);
     expect(context.code).toBe(0);
-    expect(context.outputs).toMatchObject({ mode: 'full', prev_sha: '', summary_id: '', reviewable_count: '2', cross_repo: 'false', skip_agent: 'false' });
-    expect(readCtx('hunks.json')).toEqual({ 'src/calc.ts': [{ start: 7, end: 13 }], 'src/new.ts': [{ start: 1, end: 3 }] });
-    expect(readCtx<FileFact[]>('facts.json').map((f) => f.status)).toEqual(['modified', 'added', 'deleted']);
-    expect(ocrCalls.find((a) => a[1] === 'rule')?.slice(-2)).toEqual(['src/calc.ts', 'src/new.ts']);
+    expect(context.outputs).toMatchObject({ mode: 'full', prev_sha: '', summary_id: '', reviewable_count: '3', cross_repo: 'false', skip_agent: 'false' });
+    expect(readCtx('hunks.json')).toEqual({
+      '.opencodereview/rule.json': [{ start: 1, end: 1 }],
+      'src/calc.ts': [{ start: 7, end: 13 }],
+      'src/new.ts': [{ start: 1, end: 3 }],
+    });
+    expect(readCtx<FileFact[]>('facts.json').map((f) => [f.path, f.status])).toEqual([
+      ['.opencodereview/rule.json', 'added'],
+      ['src/calc.ts', 'modified'],
+      ['src/new.ts', 'added'],
+      ['src/old.ts', 'deleted'],
+    ]);
+    // The head's `{"exclude":["**"]}` never reached ocr: it ran in a worktree without the base-absent rule file.
+    expect(ocrCalls.map((c) => c.projectRules)).toEqual([null, null]);
+    expect(ocrCalls.find((c) => c.args[1] === 'rule')?.args.slice(-3)).toEqual(['.opencodereview/rule.json', 'src/calc.ts', 'src/new.ts']);
+    expect(existsSync(join(ctx, 'ocr-worktree'))).toBe(false);
+    expect(git('worktree', 'list').split('\n')).toHaveLength(1);
     expect(readFileSync(join(ctx, 'commits.txt'), 'utf8')).toContain('double n10');
 
     const draft = JSON.stringify(review({ findings: [IN_HUNK, NEAR_HUNK] }));
@@ -336,7 +379,7 @@ describe('end-to-end dry run', () => {
 
     const context = await step(['context'], deps);
     expect(context.code).toBe(0);
-    expect(context.outputs).toMatchObject({ mode: 'full', prev_sha: headSha, summary_id: String(summaryId), reviewable_count: '2' });
+    expect(context.outputs).toMatchObject({ mode: 'full', prev_sha: headSha, summary_id: String(summaryId), reviewable_count: '3' });
 
     // Thread ids come from what context wrote, as the lead agent would read them.
     const threads = readCtx<Thread[]>('threads.json');
@@ -356,8 +399,11 @@ describe('end-to-end dry run', () => {
     expect(check.text).toBe('OK');
     expect(check.code).toBe(0);
 
+    // This run's review arrives the way the action delivers it: in claude-code-action's execution file.
+    const executionFile = join(root, 'claude-execution-output.json');
+    writeFileSync(executionFile, JSON.stringify([{ type: 'result', subtype: 'success', is_error: false, structured_output: JSON.parse(draft) }]));
     const mark = github.calls.length;
-    const publish = await step(['publish'], deps, { REVIEW: draft, AGENT_OUTCOME: 'success' });
+    const publish = await step(['publish'], deps, { CURA_EXECUTION_FILE: executionFile, AGENT_OUTCOME: 'success' });
     expect(publish.code).toBe(0);
     expect(publish.outputs).toMatchObject({ score: '4', findings: '1' });
 

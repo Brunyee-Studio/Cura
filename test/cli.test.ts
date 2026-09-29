@@ -64,13 +64,14 @@ afterEach(() => {
 const writeCtx = (name: string, value: unknown) => writeFileSync(join(ctx, name), JSON.stringify(value));
 
 /** Lays down the ctx files `context` would produce for a one-file PR (src/a.ts, lines 1–20 added). */
-function seedCtx(over: { reviewableCount?: number; facts?: unknown[]; config?: unknown; maxFiles?: number } = {}) {
+function seedCtx(over: { reviewableCount?: number; deletedCount?: number; facts?: unknown[]; config?: unknown; maxFiles?: number } = {}) {
   const facts = over.facts ?? [{ path: 'src/a.ts', status: 'modified', language: 'typescript', added: 20, removed: 0, dir: 'src' }];
   writeCtx('context.json', {
     mode: 'full',
     prevSha: null,
     summaryId: null,
     reviewableCount: over.reviewableCount ?? 1,
+    deletedCount: over.deletedCount ?? 0,
     base: 'main',
     headSha: HEAD,
     maxFiles: over.maxFiles ?? 12,
@@ -275,6 +276,60 @@ describe('publish', () => {
     expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Adds a parser.');
   });
 
+  describe('structured output from the execution file', () => {
+    // claude-code-action's execution file: the SDK message list; structured_output rides on the result message.
+    const writeExecution = (result: Record<string, unknown>) => {
+      const file = join(root, 'claude-execution-output.json');
+      const messages = [{ type: 'system', subtype: 'init', session_id: 's' }, { type: 'assistant', message: {} }, { type: 'result', ...result }];
+      writeFileSync(file, JSON.stringify(messages));
+      return file;
+    };
+
+    test('publishes a review larger than the 128 KiB env limit read from the file', async () => {
+      seedCtx();
+      const big = `BIG-${'x'.repeat(140 * 1024)}`;
+      const file = writeExecution({ subtype: 'success', is_error: false, structured_output: review({ summary: big }) });
+      const { gh, calls } = fakeGitHub();
+      const { io, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: file }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain(big);
+    });
+
+    test('the file wins over REVIEW when both are present', async () => {
+      seedCtx();
+      const file = writeExecution({ subtype: 'success', is_error: false, structured_output: review({ summary: 'FROM-FILE' }) });
+      const { gh, calls } = fakeGitHub();
+      const { io, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: file, REVIEW: JSON.stringify(review({ summary: 'FROM-ENV' })) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('FROM-FILE');
+    });
+
+    test.each([
+      ['an error result', { subtype: 'error_max_turns', is_error: true }],
+      ['a success result flagged is_error', { subtype: 'success', is_error: true, structured_output: review() }],
+      ['a success result without structured_output', { subtype: 'success', is_error: false }],
+    ])('%s publishes a failure', async (_label, result) => {
+      seedCtx();
+      const file = writeExecution(result);
+      const { gh, calls } = fakeGitHub();
+      const { io, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: file }), io, { createGitHub: () => gh });
+      expect(code()).toBe(1);
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
+    });
+
+    test('a missing file falls back to REVIEW', async () => {
+      seedCtx();
+      const { gh, calls } = fakeGitHub();
+      const { io, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: join(root, 'absent.json'), REVIEW: JSON.stringify(review()) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Adds a parser.');
+    });
+  });
+
   test('fail_on P1 fails the step on an open P1 finding', async () => {
     seedCtx();
     const { gh } = fakeGitHub();
@@ -367,6 +422,15 @@ describe('publish', () => {
     expect(body).toContain('5/5');
     expect(body).not.toContain('Review failed');
   });
+
+  test('deletion-only PR does not skip the agent: an empty REVIEW is a failure', async () => {
+    seedCtx({ reviewableCount: 0, deletedCount: 1, facts: [{ path: 'src/gone.ts', status: 'deleted', language: 'typescript', added: 0, removed: 9, dir: 'src' }] });
+    const { gh, calls } = fakeGitHub();
+    const { io, code } = makeIo();
+    await main(['publish'], env({ REVIEW: '', AGENT_OUTCOME: 'skipped' }), io, { createGitHub: () => gh });
+    expect(code()).toBe(1);
+    expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
+  });
 });
 
 describe('context', () => {
@@ -384,11 +448,16 @@ describe('context', () => {
     reviewable_files: [],
     excluded_files: [{ path: 'pnpm-lock.yaml', status: 'modified', insertions: 1, deletions: 1, exclude_reason: 'lockfile' }],
   };
+  let preview: unknown = PREVIEW;
+  beforeEach(() => {
+    preview = PREVIEW;
+  });
 
   function exec(cmd: string, args: string[], cwd: string): string {
-    expect(cwd).toBe(root);
+    // ocr runs in the base-rules worktree under the ctx dir; everything else in the workspace.
+    expect(cwd).toBe(cmd === 'ocr' ? join(ctx, 'ocr-worktree') : root);
     if (cmd === 'git' && args[0] === 'show') throw new Error('missing');
-    if (cmd === 'ocr' && args[1] === 'preview') return JSON.stringify(PREVIEW);
+    if (cmd === 'ocr' && args[1] === 'preview') return JSON.stringify(preview);
     if (cmd === 'git') return '';
     throw new Error(`unexpected exec: ${cmd} ${args.join(' ')}`);
   }
@@ -416,11 +485,32 @@ describe('context', () => {
       prevSha: null,
       summaryId: null,
       reviewableCount: 0,
+      deletedCount: 0,
       base: 'main',
       headSha: HEAD,
       maxFiles: 12,
       maxLines: 1500,
     });
+  });
+
+  test('deletion-only PR runs the agent: skip_agent=false with deletedCount persisted', async () => {
+    preview = { ...PREVIEW, excluded_files: [{ path: 'src/gone.ts', status: 'deleted', insertions: 0, deletions: 9, exclude_reason: 'deleted' }] };
+    const { gh } = fakeGitHub({ pr: PR, comments: [] });
+    const { io, code } = makeIo();
+    const env = {
+      CURA_CTX: ctx,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_WORKSPACE: root,
+      GITHUB_TOKEN: 't',
+      GITHUB_REPOSITORY: 'o/r',
+      CURA_PR: '7',
+      CURA_BASE: 'main',
+      CURA_HEAD_SHA: HEAD,
+    };
+    await main(['context'], env, io, { createGitHub: () => gh, exec });
+    expect(code()).toBe(0);
+    expect(outputs().split('\n')).toEqual(expect.arrayContaining(['reviewable_count=0', 'skip_agent=false']));
+    expect(JSON.parse(readFileSync(join(ctx, 'context.json'), 'utf8'))).toMatchObject({ reviewableCount: 0, deletedCount: 1 });
   });
 
   test('persists plan caps from CURA_MAX_FILES / CURA_MAX_LINES into context.json', async () => {

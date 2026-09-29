@@ -76,10 +76,12 @@ describe('action.yml', () => {
     expect(action).not.toMatch(/^\s*(?:- )?run: [^|\n]*\$\{\{/m);
   });
 
-  test('publish fails closed on the agent outcome and reads its structured output', () => {
+  test('publish fails closed on the agent outcome and reads its structured output from the execution file', () => {
     const publish = step('publish');
     expect(publish).toContain('AGENT_OUTCOME: ${{ steps.claude.outcome }}');
-    expect(publish).toContain('REVIEW: ${{ steps.claude.outputs.structured_output }}');
+    expect(publish).toContain('CURA_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}');
+    // REVIEW is only a fallback: a large structured_output in env would exceed Linux's 128 KiB per-string limit.
+    expect(publish).toContain("REVIEW: ${{ steps.claude.outputs.execution_file == '' && steps.claude.outputs.structured_output || '' }}");
   });
 
   test('passes allowed_bots through to claude-code-action', () => {

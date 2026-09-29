@@ -1,4 +1,4 @@
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { parseConfig } from './config.ts';
 import { parseDiff } from './diff.ts';
@@ -9,8 +9,8 @@ import type { FileFact } from './types.ts';
 
 export interface ContextOptions {
   gh: GitHub;
-  /** Runs `cmd args` in the workspace and returns stdout; throws on non-zero exit. */
-  exec: (cmd: string, args: string[]) => string;
+  /** Runs `cmd args` in `cwd` (default: the workspace) and returns stdout; throws on non-zero exit. */
+  exec: (cmd: string, args: string[], cwd?: string) => string;
   repo: { owner: string; name: string };
   pr: number;
   base: string;
@@ -27,6 +27,7 @@ export interface ContextResult {
   prevSha: string | null;
   summaryId: number | null;
   reviewableCount: number;
+  deletedCount: number;
 }
 
 interface PreviewFile {
@@ -63,6 +64,9 @@ const SUMMARY_MARKER = '<!-- cura:summary -->';
 const REVIEWED_SHA = /<!-- cura:reviewed-sha=([0-9a-f]{40}) -->/g;
 const DIFF_FLAGS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
 const GUIDANCE_MAX_BYTES = 64 * 1024;
+const PROJECT_RULES_DIR = '.opencodereview';
+/** ocr lists a deleted file under `excluded_files` with this reason, unless another exclusion applies first. */
+const DELETED_REASON = 'deleted';
 const GUIDANCE_ROOT = /^(AGENTS\.md|CLAUDE\.md|CONTRIBUTING.*|README.*)$/;
 
 const LANGUAGES: Record<string, string> = {
@@ -103,7 +107,7 @@ function applyIgnore(preview: Preview, ignore: string[]): Preview {
   const ignored = (f: PreviewFile) => ignore.some((pattern) => matchGlob(pattern, f.path));
   const reviewable = preview.reviewable_files.filter((f) => !ignored(f));
   const excluded = [
-    ...preview.excluded_files,
+    ...preview.excluded_files.map((f) => (f.exclude_reason === DELETED_REASON && ignored(f) ? { ...f, exclude_reason: 'cura_ignore' } : f)),
     ...preview.reviewable_files.filter(ignored).map((f) => ({ ...f, exclude_reason: 'cura_ignore' })),
   ];
   return {
@@ -153,9 +157,37 @@ function copyGuidance(workspace: string, dest: string): void {
   }
 }
 
-/** Runs an `ocr` command and parses its JSON stdout, naming the command on failure. */
-function execOcrJson<T>(exec: ContextOptions['exec'], args: string[]): T {
-  const out = exec('ocr', args);
+/**
+ * Runs `fn` in a throwaway worktree of HEAD whose `.opencodereview/rule.json` is the base branch's (or absent).
+ * ocr always reads the project rules (`exclude` and rule text) from its checkout, even with `--rule`, so running
+ * it in the PR head would let the PR rewrite its own review scope and rules. ocr's range mode reads only git
+ * objects, so the worktree needs no checkout.
+ */
+function withBaseRulesWorktree<T>(opts: ContextOptions, fn: (dir: string) => T): T {
+  const dir = join(opts.ctxDir, 'ocr-worktree');
+  opts.exec('git', ['worktree', 'add', '--no-checkout', '--detach', dir, 'HEAD']);
+  try {
+    // Removed rather than overwritten: a head symlink here must never be written through.
+    const rulesDir = join(dir, PROJECT_RULES_DIR);
+    rmSync(rulesDir, { recursive: true, force: true });
+    const baseRules = showFromBase(opts, `${PROJECT_RULES_DIR}/rule.json`);
+    if (baseRules !== null) {
+      mkdirSync(rulesDir);
+      writeFileSync(join(rulesDir, 'rule.json'), baseRules);
+    }
+    return fn(dir);
+  } finally {
+    try {
+      opts.exec('git', ['worktree', 'remove', '--force', dir]);
+    } catch {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+/** Runs an `ocr` command in `cwd` and parses its JSON stdout, naming the command on failure. */
+function execOcrJson<T>(exec: ContextOptions['exec'], args: string[], cwd: string): T {
+  const out = exec('ocr', args, cwd);
   try {
     return JSON.parse(out) as T;
   } catch (err) {
@@ -194,16 +226,20 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   writeJson('config.json', config);
   if (errors.length > 0) write('config-errors.txt', `${errors.map((e) => `${e.code}: ${e.message}`).join('\n')}\n`);
 
-  const rawPreview = execOcrJson<Preview>(exec, ['delegate', 'preview', '--from', `origin/${base}`, '--to', 'HEAD', '-f', 'json', ...ruleFlag]);
-  const preview = applyIgnore(rawPreview, config.ignore ?? []);
+  const { preview, facts } = withBaseRulesWorktree(opts, (dir) => {
+    const rawPreview = execOcrJson<Preview>(exec, ['delegate', 'preview', '--from', `origin/${base}`, '--to', 'HEAD', '-f', 'json', ...ruleFlag], dir);
+    const preview = applyIgnore(rawPreview, config.ignore ?? []);
+    const deleted = preview.excluded_files.filter((f) => f.exclude_reason === DELETED_REASON);
+    const facts = [...preview.reviewable_files, ...deleted].map(toFact);
+    const reviewablePaths = facts.filter((f) => f.status !== 'deleted').map((f) => f.path);
+    if (reviewablePaths.length > 0) {
+      writeJson('rules.json', execOcrJson<unknown>(exec, ['delegate', 'rule', ...ruleFlag, '-f', 'json', ...reviewablePaths], dir));
+    }
+    return { preview, facts };
+  });
   writeJson('preview.json', preview);
-
-  const facts = preview.reviewable_files.map(toFact);
   writeJson('facts.json', facts);
-  const reviewablePaths = facts.filter((f) => f.status !== 'deleted').map((f) => f.path);
-  if (reviewablePaths.length > 0) {
-    writeJson('rules.json', execOcrJson<unknown>(exec, ['delegate', 'rule', ...ruleFlag, '-f', 'json', ...reviewablePaths]));
-  }
+  const reviewableCount = facts.filter((f) => f.status !== 'deleted').length;
 
   const diff = exec('git', ['diff', ...DIFF_FLAGS, `origin/${base}...HEAD`]);
   write('diff.patch', diff);
@@ -229,5 +265,5 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
 
   copyGuidance(opts.workspace, join(ctxDir, 'guidance'));
 
-  return { mode, prevSha, summaryId: summary?.id ?? null, reviewableCount: reviewablePaths.length };
+  return { mode, prevSha, summaryId: summary?.id ?? null, reviewableCount, deletedCount: facts.length - reviewableCount };
 }
