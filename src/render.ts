@@ -2,7 +2,8 @@ import { countBySeverity, fingerprint } from './score.ts';
 import type { Anchor, Category, Finding, FindingMeta, Review, Severity } from './types.ts';
 
 const SUMMARY_MARKER = '<!-- cura:summary -->';
-const FINDING_MARKER_RE = /<!-- cura:finding (\{[\s\S]*?\}) -->/;
+const FINDING_MARKER_RE = /<!-- cura:finding (\{[\s\S]*?\}) -->/g;
+const CURA_MARKER_RE = /<!--(\s*)cura:/g;
 const FAILURE_LINE_RE = /^> ⚠️ Review failed for .*\n\n?/m;
 
 const SEVERITIES: readonly Severity[] = ['P0', 'P1', 'P2'];
@@ -43,8 +44,9 @@ export function findingMarker(meta: FindingMeta): string {
   return `<!-- cura:finding ${JSON.stringify(ordered)} -->`;
 }
 
+/** Parses the last marker: Cura appends its own after any model-authored text. */
 export function parseFindingMarker(body: string): FindingMeta | null {
-  const match = FINDING_MARKER_RE.exec(body);
+  const match = [...body.matchAll(FINDING_MARKER_RE)].at(-1);
   if (!match) return null;
   let meta: unknown;
   try {
@@ -71,16 +73,14 @@ export function renderFindingComment(f: Finding, opts: { anchor: Anchor }): stri
   const { anchor } = opts;
   const cite = anchor.kind === 'file' ? `\`${f.path}:${f.line}\` — ` : '';
   const parts = [`**[${f.severity} · ${f.category}] ${f.title}**`, `${cite}${f.body}`];
-  if (f.suggestion !== undefined && anchor.kind === 'line' && !anchor.snapped) {
-    parts.push(`\`\`\`suggestion\n${f.suggestion}\n\`\`\``);
-  }
-  parts.push(findingMarker({ v: 1, severity: f.severity, category: f.category, fingerprint: fingerprint(f) }));
-  return parts.join('\n\n');
+  if (f.suggestion !== undefined && anchor.kind === 'line' && !anchor.snapped) parts.push(fenced('suggestion', f.suggestion));
+  const marker = findingMarker({ v: 1, severity: f.severity, category: f.category, fingerprint: fingerprint(f) });
+  return `${neutraliseMarkers(parts.join('\n\n'))}\n\n${marker}`;
 }
 
 export function renderSummary(input: SummaryInput): string {
   const { review, open } = input;
-  const sections: string[] = [`${SUMMARY_MARKER}\n## Cura review`, scoreLine(input.score, open, review.risk_note)];
+  const sections: string[] = ['## Cura review', scoreLine(input.score, open, review.risk_note)];
 
   if (review.summary.trim()) sections.push(review.summary.trim());
 
@@ -94,7 +94,7 @@ export function renderSummary(input: SummaryInput): string {
     sections.push(`<details><summary>Files (${review.files.length})</summary>\n\n| File | Overview |\n| --- | --- |\n${rows.join('\n')}\n\n</details>`);
   }
 
-  if (review.diagram.trim()) sections.push(`### Sequence diagram\n\`\`\`mermaid\n${review.diagram.trim()}\n\`\`\``);
+  if (review.diagram.trim()) sections.push(`### Sequence diagram\n${fenced('mermaid', review.diagram.trim())}`);
 
   for (const severity of SEVERITIES) {
     const group = open.filter((o) => o.severity === severity);
@@ -123,8 +123,8 @@ export function renderSummary(input: SummaryInput): string {
     sections.push(`> ⚠️ ${input.unanchored} ${noun} could not be anchored to the diff — see the job summary.`);
   }
 
-  sections.push('---', footer(input), `<!-- cura:reviewed-sha=${input.headSha} -->`);
-  return `${sections.join('\n\n')}\n`;
+  sections.push('---', footer(input));
+  return `${SUMMARY_MARKER}\n${neutraliseMarkers(sections.join('\n\n'))}\n\n<!-- cura:reviewed-sha=${input.headSha} -->\n`;
 }
 
 /** Keeps the previous summary (and its confidence line) visible, flagged as stale; replaces any earlier failure notice. */
@@ -147,8 +147,20 @@ function footer(input: SummaryInput): string {
   const mode = input.mode === 'incremental' && input.prevSha ? `incremental since \`${short(input.prevSha)}\`` : 'full PR';
   return (
     `<sub>Reviewed \`${short(input.headSha)}\` against \`${input.base}\` · ${mode} · ${input.review.files.length} files` +
-    ` · [run](${input.runUrl}) · comment \`${input.rerun}\` to re-run · Cura v${input.version}</sub>`
+    ` · [run](${input.runUrl}) · comment \`${input.rerun}\` to re-run · Cura ${/^\d/.test(input.version) ? `v${input.version}` : input.version}</sub>`
   );
+}
+
+/** A code fence one backtick longer than the longest backtick run in the content (at least three). */
+function fenced(info: string, content: string): string {
+  const longest = Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${info}\n${content}\n${fence}`;
+}
+
+/** Model-authored text must not carry a Cura marker: parsers would read it as Cura's own. */
+function neutraliseMarkers(text: string): string {
+  return text.replace(CURA_MARKER_RE, '<!--$1cura-quoted:');
 }
 
 function short(sha: string): string {

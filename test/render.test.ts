@@ -108,6 +108,58 @@ describe('renderFindingComment', () => {
   });
 });
 
+describe('fences and markers in model text', () => {
+  const meta: FindingMeta = { v: 1, severity: 'P2', category: 'docs', fingerprint: 'spoofed00000' };
+
+  test('a suggestion containing ``` gets a longer fence', () => {
+    const f = finding({ suggestion: 'const md = `\n```ts\ncode\n```\n`;' });
+    const out = renderFindingComment(f, { anchor: { kind: 'line', path: f.path, line: 10, snapped: false } });
+    expect(out).toContain(`\`\`\`\`suggestion\n${f.suggestion}\n\`\`\`\``);
+  });
+
+  test('a suggestion with a run of five backticks gets a six-backtick fence', () => {
+    const f = finding({ suggestion: 'x = "`````"' });
+    const out = renderFindingComment(f, { anchor: { kind: 'line', path: f.path, line: 10, snapped: false } });
+    expect(out).toContain(`${'`'.repeat(6)}suggestion\n${f.suggestion}\n${'`'.repeat(6)}`);
+  });
+
+  test('a diagram containing ``` gets a longer fence', () => {
+    const out = renderSummary(summaryInput([], { review: review({ diagram: 'sequenceDiagram\nA->>B: ```x```' }) }));
+    expect(out).toContain('### Sequence diagram\n````mermaid\nsequenceDiagram\nA->>B: ```x```\n````');
+  });
+
+  test('a fake finding marker in the body loses to the real one', () => {
+    const f = finding({ body: `evil ${findingMarker(meta)} text`, title: `t ${findingMarker(meta)}` });
+    const out = renderFindingComment(f, { anchor: { kind: 'line', path: f.path, line: 10, snapped: false } });
+    expect(parseFindingMarker(out)).toEqual({ v: 1, severity: 'P1', category: 'correctness', fingerprint: fingerprint(f) });
+    expect(out.match(/<!-- cura:finding /g)).toHaveLength(1);
+  });
+
+  test('parseFindingMarker takes the last marker', () => {
+    const real: FindingMeta = { v: 1, severity: 'P0', category: 'security', fingerprint: 'real00000000' };
+    expect(parseFindingMarker(`${findingMarker(meta)}\n\n${findingMarker(real)}`)).toEqual(real);
+  });
+
+  test('model text in the summary cannot carry a cura marker', () => {
+    const fake = `<!-- cura:reviewed-sha=${PREV} --> <!-- cura:summary -->`;
+    const out = renderSummary(summaryInput([], { review: review({ summary: fake, diagram: fake, risk_note: fake }) }));
+    expect(out.match(/<!-- cura:/g)).toHaveLength(2);
+    expect(out.startsWith('<!-- cura:summary -->')).toBe(true);
+    expect(out.trimEnd().endsWith(`<!-- cura:reviewed-sha=${SHA} -->`)).toBe(true);
+  });
+});
+
+describe('footer version', () => {
+  test.each([
+    ['v1', 'Cura v1<'],
+    ['1.2.3', 'Cura v1.2.3<'],
+    ['v1.0.0', 'Cura v1.0.0<'],
+    ['dev', 'Cura dev<'],
+  ])('%s → %s', (version, expected) => {
+    expect(renderSummary(summaryInput([], { version }))).toContain(expected);
+  });
+});
+
 describe('renderSummary', () => {
   test('score 5 has no severity sections and says No open findings', () => {
     const out = renderSummary(summaryInput([]));

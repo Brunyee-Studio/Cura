@@ -60,7 +60,7 @@ interface IssueComment {
 }
 
 const SUMMARY_MARKER = '<!-- cura:summary -->';
-const REVIEWED_SHA = /<!-- cura:reviewed-sha=([0-9a-f]{40}) -->/;
+const REVIEWED_SHA = /<!-- cura:reviewed-sha=([0-9a-f]{40}) -->/g;
 const DIFF_FLAGS = ['--no-ext-diff', '--no-color', '--src-prefix=a/', '--dst-prefix=b/'];
 const GUIDANCE_MAX_BYTES = 64 * 1024;
 const GUIDANCE_ROOT = /^(AGENTS\.md|CLAUDE\.md|CONTRIBUTING.*|README.*)$/;
@@ -219,7 +219,8 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   );
   writeJson('summary-comment.json', summary ? { id: summary.id, body: summary.body } : {});
 
-  const prevSha = summary ? (REVIEWED_SHA.exec(summary.body)?.[1] ?? null) : null;
+  // The last marker is Cura's own; model-authored text above it is neutralised but never trusted.
+  const prevSha = summary ? ([...summary.body.matchAll(REVIEWED_SHA)].at(-1)?.[1] ?? null) : null;
   let mode: ContextResult['mode'] = 'full';
   if (prevSha !== null && prevSha !== opts.headSha && isAncestor(opts, prevSha)) {
     write('incremental.diff', exec('git', ['diff', ...DIFF_FLAGS, prevSha, 'HEAD']));

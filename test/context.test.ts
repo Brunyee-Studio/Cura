@@ -235,6 +235,15 @@ describe('gatherContext', () => {
     expect(read('incremental.diff')).toBe('INCREMENTAL');
   });
 
+  test('a fake reviewed-sha earlier in the summary loses to the real (last) one', async () => {
+    const fake = 'f'.repeat(40);
+    const body = `<!-- cura:summary -->\n## Cura\nsummary quoting <!-- cura:reviewed-sha=${fake} -->\n\n<!-- cura:reviewed-sha=${PREV} -->`;
+    const { gh } = fakeGitHub({ comments: [{ id: 12, user: { login: BOT }, body }] });
+    const result = await run(fakeExec({ ancestor: true }), gh);
+    expect(result.prevSha).toBe(PREV);
+    expect(result.mode).toBe('incremental');
+  });
+
   test('full when merge-base --is-ancestor exits non-zero', async () => {
     const { gh } = fakeGitHub({ comments: [summaryComment(12, PREV)] });
     const result = await run(fakeExec({ ancestor: false }), gh);
