@@ -57,7 +57,7 @@ export function isBot(login: string, botLogin: string): boolean {
   return stripBotSuffix(login) === stripBotSuffix(botLogin);
 }
 
-function stripMarkerLine(body: string): string {
+export function stripMarkerLine(body: string): string {
   return body
     .split('\n')
     .filter((line) => !line.includes(FINDING_MARKER_LINE))
