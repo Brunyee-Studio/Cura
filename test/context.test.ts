@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -274,5 +274,30 @@ describe('gatherContext', () => {
     expect(existsSync(join(guidance, 'NOTES.md'))).toBe(false);
     expect(existsSync(join(guidance, 'CLAUDE.md'))).toBe(false);
     expect(existsSync(join(guidance, 'README.d'))).toBe(false);
+  });
+  test('never copies symlinked guidance files or a symlinked .github dir', async () => {
+    const secrets = join(root, 'secrets');
+    mkdirSync(secrets);
+    writeFileSync(join(secrets, 'config'), 'token=secret');
+    writeFileSync(join(secrets, 'copilot-instructions.md'), 'secret');
+    symlinkSync(join(secrets, 'config'), join(workspace, 'AGENTS.md'));
+    symlinkSync(join(secrets, 'config'), join(workspace, 'README.md'));
+    symlinkSync(secrets, join(workspace, '.github'));
+    writeFileSync(join(workspace, 'CLAUDE.md'), 'real');
+    const { gh } = fakeGitHub();
+    await run(fakeExec(), gh);
+    const guidance = join(ctxDir, 'guidance');
+    expect(read('guidance/CLAUDE.md')).toBe('real');
+    expect(existsSync(join(guidance, 'AGENTS.md'))).toBe(false);
+    expect(existsSync(join(guidance, 'README.md'))).toBe(false);
+    expect(existsSync(join(guidance, 'copilot-instructions.md'))).toBe(false);
+  });
+
+  test('invalid ocr JSON fails with an error naming the command', async () => {
+    const exec = fakeExec();
+    const base = exec.getMockImplementation()!;
+    exec.mockImplementation((cmd, args) => (cmd === 'ocr' && args[1] === 'preview' ? 'oops' : base(cmd, args)));
+    const { gh } = fakeGitHub();
+    await expect(run(exec, gh)).rejects.toThrow(/^ocr delegate preview returned invalid JSON/);
   });
 });

@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import { parseConfig } from './config.ts';
 import { parseDiff } from './diff.ts';
@@ -124,25 +124,42 @@ function isAncestor(opts: ContextOptions, sha: string): boolean {
   }
 }
 
+/** lstat that never follows links; null when the path is missing. */
+function lstatOrNull(path: string) {
+  try {
+    return lstatSync(path);
+  } catch {
+    return null;
+  }
+}
+
+// The workspace is the PR head checkout: a committed symlink could point at any
+// runner-readable secret, so only real files (inside a real `.github` dir) are copied.
 function copyGuidance(workspace: string, dest: string): void {
   const sources = readdirSync(workspace)
     .filter((name) => GUIDANCE_ROOT.test(name))
     .map((name) => ({ from: join(workspace, name), name }));
-  sources.push({ from: join(workspace, '.github', 'copilot-instructions.md'), name: 'copilot-instructions.md' });
+  if (lstatOrNull(join(workspace, '.github'))?.isDirectory()) {
+    sources.push({ from: join(workspace, '.github', 'copilot-instructions.md'), name: 'copilot-instructions.md' });
+  }
 
   for (const { from, name } of sources) {
-    let size: number;
-    try {
-      const stat = statSync(from);
-      if (!stat.isFile()) continue;
-      size = stat.size;
-    } catch {
-      continue;
-    }
+    const stat = lstatOrNull(from);
+    if (!stat?.isFile()) continue;
     mkdirSync(dest, { recursive: true });
     const target = join(dest, name);
-    if (size <= GUIDANCE_MAX_BYTES) copyFileSync(from, target);
+    if (stat.size <= GUIDANCE_MAX_BYTES) copyFileSync(from, target);
     else writeFileSync(target, readFileSync(from).subarray(0, GUIDANCE_MAX_BYTES));
+  }
+}
+
+/** Runs an `ocr` command and parses its JSON stdout, naming the command on failure. */
+function execOcrJson<T>(exec: ContextOptions['exec'], args: string[]): T {
+  const out = exec('ocr', args);
+  try {
+    return JSON.parse(out) as T;
+  } catch (err) {
+    throw new Error(`ocr ${args.slice(0, 2).join(' ')} returned invalid JSON: ${(err as Error).message}`, { cause: err });
   }
 }
 
@@ -177,7 +194,7 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   writeJson('config.json', config);
   if (errors.length > 0) write('config-errors.txt', `${errors.map((e) => `${e.code}: ${e.message}`).join('\n')}\n`);
 
-  const rawPreview = JSON.parse(exec('ocr', ['delegate', 'preview', '--from', `origin/${base}`, '--to', 'HEAD', '-f', 'json', ...ruleFlag])) as Preview;
+  const rawPreview = execOcrJson<Preview>(exec, ['delegate', 'preview', '--from', `origin/${base}`, '--to', 'HEAD', '-f', 'json', ...ruleFlag]);
   const preview = applyIgnore(rawPreview, config.ignore ?? []);
   writeJson('preview.json', preview);
 
@@ -185,7 +202,7 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   writeJson('facts.json', facts);
   const reviewablePaths = facts.filter((f) => f.status !== 'deleted').map((f) => f.path);
   if (reviewablePaths.length > 0) {
-    writeJson('rules.json', JSON.parse(exec('ocr', ['delegate', 'rule', ...ruleFlag, '-f', 'json', ...reviewablePaths])));
+    writeJson('rules.json', execOcrJson<unknown>(exec, ['delegate', 'rule', ...ruleFlag, '-f', 'json', ...reviewablePaths]));
   }
 
   const diff = exec('git', ['diff', ...DIFF_FLAGS, `origin/${base}...HEAD`]);
