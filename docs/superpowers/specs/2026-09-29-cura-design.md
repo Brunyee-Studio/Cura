@@ -71,6 +71,8 @@ TypeScript runs directly on Node 24 (type stripping; erasable syntax only — no
 | `max_lines_per_scope` | no | `1500` | Chunk cap (changed lines) |
 | `fail_on` | no | `none` | `P0` / `P1` / `none` — fail the step when an open finding at or above this severity exists |
 | `allow_forks` | no | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
+| `bot_login` | no | `github-actions` | Author login whose marked threads Cura owns (set when using a custom token) |
+| `timeout_minutes` | no | `45` | Claude step timeout |
 
 Outputs: `score`, `findings` (count), `summary_url`.
 
