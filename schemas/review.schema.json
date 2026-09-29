@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cura review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "risk_note", "scopes", "files", "diagram", "findings", "resolved", "dismissed", "discarded"],
+  "properties": {
+    "summary": { "type": "string" },
+    "risk_note": { "type": "string" },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "files", "reviewer_notes"],
+        "properties": {
+          "name": { "type": "string" },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "reviewer_notes": { "type": "string" }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "overview"],
+        "properties": {
+          "path": { "type": "string" },
+          "overview": { "type": "string" }
+        }
+      }
+    },
+    "diagram": { "type": "string" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "severity", "category", "path", "line", "title", "body"],
+        "properties": {
+          "status": { "type": "string", "enum": ["new", "existing"] },
+          "thread_id": { "type": "string" },
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "category": {
+            "type": "string",
+            "enum": ["correctness", "security", "data-loss", "performance", "contract", "convention", "test", "docs"]
+          },
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "suggestion": { "type": "string" }
+        }
+      }
+    },
+    "resolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread_id", "note"],
+        "properties": {
+          "thread_id": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "dismissed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["thread_id", "reason"],
+        "properties": {
+          "thread_id": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "discarded": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["location", "candidate", "reason"],
+        "properties": {
+          "location": { "type": "string" },
+          "candidate": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}

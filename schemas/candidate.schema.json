@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Cura scope-reviewer candidates",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["candidates", "consulted"],
+  "properties": {
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "category", "path", "line", "title", "body", "evidence"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["P0", "P1", "P2"] },
+          "category": {
+            "type": "string",
+            "enum": ["correctness", "security", "data-loss", "performance", "contract", "convention", "test", "docs"]
+          },
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "start_line": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["location", "note"],
+              "properties": {
+                "location": { "type": "string" },
+                "note": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "consulted": { "type": "array", "items": { "type": "string" } }
+  }
+}
