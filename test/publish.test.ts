@@ -287,6 +287,28 @@ describe('publish', () => {
     expect(result).toMatchObject({ score: 3, findings: 2, summaryUrl: 'https://github.com/o/r/pull/7#issuecomment-55', failed: false });
   });
 
+  test('existing snapped finding with a suggestion is not re-posted with the suggestion', async () => {
+    const f = finding({ status: 'existing', thread_id: 'RT_1', line: 35, suggestion: 'return items.length;' });
+    const postedBody = renderFindingComment(f, { anchor: { kind: 'line', path: f.path, line: 30, snapped: true } });
+    const { gh, rest } = fakeGitHub({ threads: [[threadNode('RT_1', 101, f, { line: 30, body: postedBody })]] });
+
+    await run(gh, { review: review({ findings: [f] }) });
+
+    expect(rest('PATCH', '/pulls/comments/')).toEqual([]);
+  });
+
+  test('existing finding on its own line with a changed suggestion is edited with the suggestion', async () => {
+    const before = finding({ status: 'existing', thread_id: 'RT_1', suggestion: 'old();' });
+    const after = { ...before, suggestion: 'fixed();' };
+    const { gh, rest } = fakeGitHub({ threads: [[threadNode('RT_1', 101, before)]] });
+
+    await run(gh, { review: review({ findings: [after] }) });
+
+    const patches = rest('PATCH', '/pulls/comments/');
+    expect(patches).toHaveLength(1);
+    expect((patches[0].body as { body: string }).body).toContain('```suggestion\nfixed();\n```');
+  });
+
   test('existing finding with a changed severity edits its root comment', async () => {
     const before = finding({ status: 'existing', thread_id: 'RT_1' });
     const after = { ...before, severity: 'P0' as const, body: 'Worse than thought.' };

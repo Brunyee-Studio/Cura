@@ -185,9 +185,10 @@ async function editChangedFindings(ctx: Ctx, findings: Finding[], threads: Map<s
   for (const finding of findings) {
     const thread = finding.thread_id === undefined ? undefined : threads.get(finding.thread_id);
     if (!thread || thread.isResolved) continue;
+    // Anchor from where the comment actually sits: a suggestion only belongs on the finding's own line.
     const anchor: Anchor = thread.line === null
       ? { kind: 'file', path: finding.path }
-      : { kind: 'line', path: finding.path, line: finding.line, snapped: false };
+      : { kind: 'line', path: finding.path, line: thread.line, snapped: thread.line !== finding.line };
     const body = renderFindingComment(finding, { anchor });
     const unchanged =
       thread.meta.severity === finding.severity &&
