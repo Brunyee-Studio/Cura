@@ -9,6 +9,7 @@ import { main, shellQuote, type Deps } from '../src/cli.ts';
 import type { GitHub } from '../src/github.ts';
 import { assetName } from '../src/install.ts';
 import type { Finding, Review } from '../src/types.ts';
+import { makeIo } from './io.ts';
 
 const HEAD = 'abcdef1234567890abcdef1234567890abcdef12';
 
@@ -40,16 +41,6 @@ function fakeGitHub(opts: { pr?: unknown; comments?: unknown[] } = {}) {
     },
   };
   return { gh, calls };
-}
-
-function makeIo(stdin = '') {
-  const out: string[] = [];
-  const codes: number[] = [];
-  return {
-    io: { stdin: async () => stdin, stdout: (s: string) => void out.push(s), exit: (code: number) => void codes.push(code) },
-    text: () => out.join('\n'),
-    code: () => codes.at(-1) ?? 0,
-  };
 }
 
 let root: string;
