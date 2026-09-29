@@ -566,7 +566,10 @@ describe('prompt', () => {
     expect(out).toMatch(/^allowed_tools=Bash\(git diff origin\/main\.\.\.HEAD --:\*\),/m);
     expect(out).toMatch(/^disallowed_tools=.+$/m);
     const schemaLine = out.split('\n').find((l) => l.startsWith('schema='));
-    expect(JSON.parse(schemaLine!.slice('schema='.length))).toHaveProperty('properties.findings');
+    const schema = JSON.parse(schemaLine!.slice('schema='.length));
+    expect(schema).toHaveProperty('properties.findings');
+    // Claude Code's --json-schema validator rejects the draft 2020-12 meta-schema URI.
+    expect(schema).not.toHaveProperty('$schema');
   });
 
   test('emits claude_args that shell-quote and a POSIX shell split back into the exact arguments', async () => {

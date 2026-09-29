@@ -199,7 +199,10 @@ function prompt(env: Env, io: Io): void {
   const agents = JSON.stringify(buildAgents({ base: state.base, model }));
   const allowed = allowedTools({ base: state.base, ctxDir, curaDir });
   const disallowed = disallowedTools();
-  const schema = JSON.stringify(loadSchema('review'));
+  // Claude Code's --json-schema validator doesn't know the draft 2020-12 meta-schema,
+  // so drop the `$schema` declaration (the schema itself only uses draft-07 keywords).
+  const { $schema: _metaSchema, ...reviewSchema } = loadSchema('review') as Record<string, unknown>;
+  const schema = JSON.stringify(reviewSchema);
   writeFileSync(join(ctxDir, 'lead-prompt.md'), lead);
   writeFileSync(agentsFile, agents);
 
