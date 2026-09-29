@@ -1,0 +1,30 @@
+diff --git a/src/multi.ts b/src/multi.ts
+index 21a8f1c..3f82d26 100644
+--- a/src/multi.ts
++++ b/src/multi.ts
+@@ -2,7 +2,7 @@ m 1
+ m 2
+ m 3
+ m 4
+-m 5
++m 5 edited
+ m 6
+ m 7
+ m 8
+@@ -27,6 +27,7 @@ m 26
+ m 27
+ m 28
+ m 29
++m new 30a
+ m 30
+ m 31
+ m 32
+@@ -46,8 +47,6 @@ m 45
+ m 46
+ m 47
+ m 48
+-m 49
+-m 50
+ m 51
+ m 52
+ m 53
