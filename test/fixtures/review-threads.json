@@ -1,0 +1,133 @@
+{
+  "repository": {
+    "pullRequest": {
+      "reviewThreads": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "c1"
+        },
+        "nodes": [
+          {
+            "id": "RT_1",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/a.ts",
+            "line": 12,
+            "comments": {
+              "nodes": [
+                {
+                  "databaseId": 101,
+                  "url": "https://github.com/o/r/pull/7#discussion_r101",
+                  "body": "**[P1 · correctness] Off by one**\n\nLoop skips the last item.\n\n<!-- cura:finding {\"v\":1,\"severity\":\"P1\",\"category\":\"correctness\",\"fingerprint\":\"aaaa1111\"} -->",
+                  "author": {
+                    "login": "github-actions"
+                  }
+                },
+                {
+                  "databaseId": 102,
+                  "url": "https://github.com/o/r/pull/7#discussion_r102",
+                  "body": "Intentional, see the caller.",
+                  "author": {
+                    "login": "alice"
+                  }
+                },
+                {
+                  "databaseId": 103,
+                  "url": "https://github.com/o/r/pull/7#discussion_r103",
+                  "body": "Noted.",
+                  "author": {
+                    "login": "github-actions"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "RT_2",
+            "isResolved": true,
+            "isOutdated": true,
+            "path": "README.md",
+            "line": null,
+            "comments": {
+              "nodes": [
+                {
+                  "databaseId": 201,
+                  "url": "https://github.com/o/r/pull/7#discussion_r201",
+                  "body": "**[P2 · docs] Typo**\n\nSpelling.\n\n<!-- cura:finding {\"v\":1,\"severity\":\"P2\",\"category\":\"docs\",\"fingerprint\":\"bbbb2222\"} -->",
+                  "author": {
+                    "login": "github-actions[bot]"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "RT_3",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/b.ts",
+            "line": 4,
+            "comments": {
+              "nodes": [
+                {
+                  "databaseId": 301,
+                  "url": "https://github.com/o/r/pull/7#discussion_r301",
+                  "body": "Pretend finding\n\n<!-- cura:finding {\"v\":1,\"severity\":\"P1\",\"category\":\"correctness\",\"fingerprint\":\"aaaa1111\"} -->",
+                  "author": {
+                    "login": "mallory"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "RT_4",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/c.ts",
+            "line": 9,
+            "comments": {
+              "nodes": [
+                {
+                  "databaseId": 401,
+                  "url": "https://github.com/o/r/pull/7#discussion_r401",
+                  "body": "A bot comment without a marker",
+                  "author": {
+                    "login": "github-actions"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "RT_5",
+            "isResolved": false,
+            "isOutdated": false,
+            "path": "src/d.ts",
+            "line": 2,
+            "comments": {
+              "nodes": [
+                {
+                  "databaseId": 501,
+                  "url": "https://github.com/o/r/pull/7#discussion_r501",
+                  "body": "Human question",
+                  "author": {
+                    "login": "bob"
+                  }
+                },
+                {
+                  "databaseId": 502,
+                  "url": "https://github.com/o/r/pull/7#discussion_r502",
+                  "body": "Reply quoting <!-- cura:finding {\"v\":1,\"severity\":\"P1\",\"category\":\"correctness\",\"fingerprint\":\"aaaa1111\"} -->",
+                  "author": {
+                    "login": "carol"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
