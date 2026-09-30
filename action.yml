@@ -34,9 +34,9 @@ inputs:
     required: false
     default: ''
   model:
-    description: Model for the lead and its subagents. Pinned to Opus 5.5; set another model ID to override.
+    description: Model for the lead and its subagents. Pinned to Sonnet 5.5; set another model ID to override.
     required: false
-    default: claude-opus-5-5
+    default: claude-sonnet-5-5
   ocr_version:
     description: OpenCodeReview release to install when `ocr` is not on PATH. Defaults to the version pinned in Cura.
     required: false
@@ -181,8 +181,15 @@ runs:
         CURA_CTX: ${{ runner.temp }}/cura
         CURA_PR: ${{ steps.pr.outputs.number }}
         CURA_MODEL: ${{ inputs.model }}
+      # Under `claude -p` a subagent runs in the background by default, and the
+      # lead returned its review while its reviewers were still running. With
+      # background tasks off each subagent runs in the foreground: it still gets
+      # its own context, and the lead can still dispatch several at once, but the
+      # Agent call returns only when the subagent has. claude-code-action's step
+      # env passes only the vars it lists, so this goes through $GITHUB_ENV.
       run: |
         node "$GITHUB_ACTION_PATH/src/cli.ts" prompt
+        echo "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" >> "$GITHUB_ENV"
 
     # The session reads untrusted PR content, so it gets no GitHub tools and
     # Bash is pinned to the exact command forms the prompt uses (see

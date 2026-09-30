@@ -84,11 +84,11 @@ Comment `/cura` on the PR to review it again. You must be an owner, member or co
 | `runs_on` | string | `ubuntu-latest` | Runner label for the review job |
 | `rules` | string | `.opencodereview/rule.json` | OCR rule file, read from the PR's base branch (skipped when absent there) |
 | `config` | string | `.github/cura.json` | Cura config file, read from the PR's base branch |
-| `model` | string | `claude-opus-5-5` | Model for the lead and its subagents (pinned to Opus 5.5); set another model ID to override |
+| `model` | string | `claude-sonnet-5-5` | Model for the lead and its subagents (pinned to Sonnet 5.5); set another model ID to override |
 | `fail_on` | string | `none` | Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`) |
 | `max_files_per_scope` | number | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | number | `1500` | Chunk cap: changed lines (added + removed) per review scope |
-| `timeout_minutes` | number | `45` | Timeout for the review job |
+| `timeout_minutes` | number | `20` | Timeout for the review job |
 | `allowed_bots` | string | `''` | Comma-separated bot logins allowed to trigger the review |
 | `allow_forks` | boolean | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 
@@ -144,7 +144,7 @@ steps:
 | `rules` | no | `.opencodereview/rule.json` | OCR rule file, read from the PR's base branch (skipped when absent there) |
 | `config` | no | `.github/cura.json` | Cura config file, read from the PR's base branch |
 | `pr` | no | `''` | PR number; defaults to the triggering `pull_request` or `issue_comment` event's PR |
-| `model` | no | `claude-opus-5-5` | Model for the lead and its subagents (pinned to Opus 5.5); set another model ID to override |
+| `model` | no | `claude-sonnet-5-5` | Model for the lead and its subagents (pinned to Sonnet 5.5); set another model ID to override |
 | `ocr_version` | no | `''` | OpenCodeReview release to install when `ocr` is not on `PATH`; empty means the version pinned in Cura |
 | `max_files_per_scope` | no | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | no | `1500` | Chunk cap: changed lines (added + removed) per review scope |

@@ -21,9 +21,9 @@ on:
         type: string
         default: .github/cura.json
       model:
-        description: Model for the lead and its subagents. Pinned to Opus 5.5; set another model ID to override.
+        description: Model for the lead and its subagents. Pinned to Sonnet 5.5; set another model ID to override.
         type: string
-        default: claude-opus-5-5
+        default: claude-sonnet-5-5
       fail_on:
         description: Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`).
         type: string
@@ -39,7 +39,7 @@ on:
       timeout_minutes:
         description: Timeout for the review job.
         type: number
-        default: 45
+        default: 20
       allowed_bots:
         description: Comma-separated bot logins allowed to trigger the review (e.g. `dependabot[bot]`).
         type: string

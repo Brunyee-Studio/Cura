@@ -28,7 +28,7 @@ jobs:
       group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     permissions:
       contents: write
       pull-requests: write
