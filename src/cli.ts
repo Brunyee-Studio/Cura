@@ -9,7 +9,7 @@ import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
 import { OCR_VERSION, resolveOcr } from './install.ts';
 import { checkPlan, fallbackPlan } from './plan.ts';
-import { publish, publishFailure } from './publish.ts';
+import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
 import { loadSchema } from './schema.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
 
@@ -342,9 +342,9 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
     review = executionFile === null ? parseJson(raw) : structuredOutputFrom(executionFile);
   }
 
-  if (review === undefined) {
+  const markFailed = () => {
     const previous = readJson<{ body?: string }>(ctxDir, 'summary-comment.json');
-    const summaryUrl = await publishFailure({
+    return publishFailure({
       gh,
       repo,
       pr,
@@ -353,6 +353,10 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
       runUrl,
       headSha: state.headSha,
     });
+  };
+
+  if (review === undefined) {
+    const summaryUrl = await markFailed();
     setOutputs(env, io, { score: '0', findings: '0', summary_url: summaryUrl });
     return io.exit(1);
   }
@@ -376,10 +380,15 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
     version: env.CURA_VERSION || 'dev',
     minSeverity,
     botLogin: botLogin(env),
+  }).catch(async (err: unknown) => {
+    // A crash part-way through must not leave the previous summary looking current.
+    await markFailed().catch(() => undefined);
+    throw err;
   });
 
   setOutputs(env, io, { score: String(result.score), findings: String(result.findings), summary_url: result.summaryUrl });
   if (result.unanchored.length > 0) stepSummary(env, io, renderUnanchored(result.unanchored));
+  if (result.unresolved.length > 0) stepSummary(env, io, renderUnresolved(result.unresolved));
 
   // Score encodes the worst open severity: ≤3 means an open P1 or worse, ≤2 an open P0.
   const gateHit = failOn !== 'none' && result.score <= FAIL_ON_RANK[failOn];
@@ -418,6 +427,11 @@ function minSeverityFrom(env: Env, ctxDir: string): Severity {
 function renderUnanchored(findings: Finding[]): string {
   const items = findings.map((f) => `- **[${f.severity}] ${f.title}** — \`${f.path}:${f.line}\`\n\n  ${f.body.replace(/\n/g, '\n  ')}`);
   return `### Cura: findings that could not be anchored\n\n${items.join('\n')}\n`;
+}
+
+function renderUnresolved(threads: UnresolvedThread[]): string {
+  const items = threads.map((t) => `- ${t.url} — ${t.error}`);
+  return `### Cura: threads that could not be resolved\n\nThey stay open. Resolving a thread needs a token with \`contents: write\`.\n\n${items.join('\n')}\n`;
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────

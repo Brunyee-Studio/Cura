@@ -87,7 +87,7 @@ jobs:
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     outputs:

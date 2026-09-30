@@ -103,9 +103,10 @@ export function createGitHub(opts: GitHubOptions): GitHub {
 
     async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
       const { data } = await request('POST', `${apiUrl}/graphql`, { query, variables });
-      const payload = data as { data?: T; errors?: unknown[] };
+      const payload = data as { data?: T; errors?: { message?: string }[] };
       if (Array.isArray(payload.errors) && payload.errors.length > 0) {
-        throw new GitHubError('GitHub GraphQL request returned errors', 200, payload);
+        const messages = payload.errors.map((e) => e?.message ?? JSON.stringify(e)).join('; ');
+        throw new GitHubError(`GitHub GraphQL request returned errors: ${messages}`, 200, payload);
       }
       return payload.data as T;
     },
