@@ -269,6 +269,21 @@ describe('publish', () => {
     ]);
     expect(result).toMatchObject({ findings: 1, failed: false });
     expect(summaryBody(calls)).not.toContain('### Resolved since last review');
+    expect(summaryBody(calls)).toContain('1 thread Cura closed could not be resolved on GitHub and still counts toward the score: [thread](https://github.com/o/r/pull/7#discussion_r101)');
+  });
+
+  test.each([
+    ['Fixed in dddf436f. `recordConsent` now checks consent.'],
+    ['Resolved in `dddf436`: `recordConsent` now checks consent.'],
+  ])('a note that restates a commit SHA is posted without it: %s', async (note) => {
+    const old = finding();
+    const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_1', 101, old)], [threadNode('RT_1', 101, old, { isResolved: true })]] });
+
+    await run(gh, { review: review({ resolved: [{ thread_id: 'RT_1', note }] }) });
+
+    const reply = calls.find((c) => c.path.endsWith('/replies'));
+    expect(reply?.body).toEqual({ body: 'Resolved in `abcdef1`: `recordConsent` now checks consent.' });
+    expect(summaryBody(calls)).toContain('— `recordConsent` now checks consent.');
   });
 
   test('human-resolved thread is untouched and not scored', async () => {

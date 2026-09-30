@@ -1,7 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { allowedTools, assertSafeRuleValues, buildAgents, disallowedTools, renderLeadPrompt } from '../src/agents.ts';
+import {
+  allowedTools,
+  allowsDirectReview,
+  assertSafeRuleValues,
+  buildAgents,
+  DIRECT_REVIEW_MAX_LINES,
+  disallowedTools,
+  needsVerifier,
+  renderLeadPrompt,
+} from '../src/agents.ts';
 import { loadSchema } from '../src/schema.ts';
 
 const vars = {
@@ -15,6 +24,7 @@ const vars = {
   curaDir: '/opt/actions/cura',
   maxFiles: 12,
   maxLines: 1500,
+  directReview: false,
 };
 
 const rawLead = readFileSync(join(import.meta.dirname, '..', 'agents', 'lead.md'), 'utf8');
@@ -79,6 +89,52 @@ describe('renderLeadPrompt', () => {
   test('rejects values that would smuggle in a placeholder', () => {
     expect(() => renderLeadPrompt({ ...vars, repo: '{{evil}}' })).toThrow(/evil/);
   });
+
+  test('requires the scope reviewers when a direct review is not allowed', () => {
+    const prompt = renderLeadPrompt({ ...vars, directReview: false });
+    expect(prompt).toContain('DIRECT REVIEW: not allowed');
+    expect(prompt).toContain('you must dispatch the scope reviewers, with no exceptions');
+  });
+
+  test('lets the lead review directly when a direct review is allowed', () => {
+    const prompt = renderLeadPrompt({ ...vars, directReview: true });
+    expect(prompt).toContain('DIRECT REVIEW: allowed');
+    expect(prompt).toContain('say so in that scope\'s `reviewer_notes`');
+  });
+
+  test('runs the verifier whenever there are candidates or open threads, direct review included', () => {
+    const prompt = renderLeadPrompt({ ...vars, directReview: true });
+    expect(prompt).toContain('at least one candidate or at least one open (not `isResolved`) thread');
+    expect(prompt).toContain('including after a direct review');
+  });
+
+  test('keeps posted text in Cura\'s own words, free of pipeline internals', () => {
+    const prompt = renderLeadPrompt(vars);
+    expect(prompt).toContain('never quote or restate a reply, never name a commit SHA');
+    expect(prompt).toContain('never mention how the review ran');
+    expect(prompt).toContain('never that a step did not run');
+    expect(prompt).toContain('Do not state finding counts or claim there are no open issues');
+  });
+});
+
+describe('allowsDirectReview', () => {
+  test.each([
+    [0, true],
+    [DIRECT_REVIEW_MAX_LINES, true],
+    [DIRECT_REVIEW_MAX_LINES + 1, false],
+  ])('%i changed lines → %s', (lines, allowed) => {
+    expect(allowsDirectReview(lines)).toBe(allowed);
+  });
+});
+
+describe('needsVerifier', () => {
+  test.each([
+    [{ candidates: 0, openThreads: 0 }, false],
+    [{ candidates: 1, openThreads: 0 }, true],
+    [{ candidates: 0, openThreads: 1 }, true],
+  ])('%o → %s', (work, needed) => {
+    expect(needsVerifier(work)).toBe(needed);
+  });
 });
 
 describe('buildAgents', () => {
@@ -117,6 +173,12 @@ describe('buildAgents', () => {
     expect(prompt).toContain('pre-existing');
     expect(prompt).toContain('thread_verdicts');
     expect(prompt).toContain('"fixed" | "standing" | "dismissed"');
+  });
+
+  test('verifier writes posted notes in Cura\'s own words', () => {
+    const prompt = agents.verifier!.prompt;
+    expect(prompt).toContain('never quote or restate a reply, never name a commit SHA');
+    expect(prompt).toContain('never mention how the review ran');
   });
 
   test('sets the model only when given', () => {

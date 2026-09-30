@@ -23,6 +23,8 @@ For each open thread, read the code at its path in the head version and its repl
 - `dismissed` — a human reply gives a reasonable rebuttal or an accepted trade-off. A bare "won't fix" without a reason is not enough.
 A kept candidate that describes the same issue as a standing thread is a duplicate: discard it with reason "duplicate of thread <thread_id>".
 
+A `fixed` or `dismissed` note is posted on the thread: write one line in Cura's own words saying what changed or why the trade-off stands; never quote or restate a reply, never name a commit SHA, and never mention how the review ran — the lead, the reviewers or yourself. Kept candidates' bodies are posted too, under the same last rule.
+
 ## Output
 Return only JSON of this shape as your final message — no prose and no code fences:
 

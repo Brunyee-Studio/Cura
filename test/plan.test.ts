@@ -38,10 +38,17 @@ describe('checkPlan', () => {
   });
 
   test('duplicate and unknown files are reported', () => {
-    const plan = { scopes: [scope('a', ['src/a.ts', 'src/b.ts', 'old.ts']), scope('b', ['src/a.ts', 'README.md', 'nope.ts'])] };
+    const plan = { scopes: [scope('a', ['src/a.ts', 'src/b.ts']), scope('b', ['src/a.ts', 'README.md', 'nope.ts'])] };
     const errors = checkPlan(plan, { ...caps, facts });
-    expect(codes(errors).sort()).toEqual(['plan.duplicate', 'plan.unknown', 'plan.unknown']);
-    expect(errors.find((e) => e.code === 'plan.duplicate')?.path).toBe('src/a.ts');
+    expect(codes(errors).sort()).toEqual(['plan.duplicate', 'plan.unknown']);
+    const duplicate = errors.find((e) => e.code === 'plan.duplicate')!;
+    expect(duplicate.path).toBe('src/a.ts');
+    expect(duplicate.message).toContain('"a", "b"');
+  });
+
+  test('a deleted file may sit in a scope next to the changes it relates to', () => {
+    const plan = { scopes: [scope('src', ['src/a.ts', 'src/b.ts', 'old.ts']), scope('root', ['README.md'])] };
+    expect(checkPlan(plan, { ...caps, facts })).toEqual([]);
   });
 
   test('scope over the file cap is rejected', () => {
@@ -129,6 +136,130 @@ describe('fallbackPlan', () => {
     const plan = fallbackPlan(facts, caps);
     expect(plan.scopes.map((s) => s.files)).toEqual([['src/a.ts', 'src/b.ts'], ['src/c.ts'], ['src/d.ts']]);
     expect(checkPlan(plan, { ...caps, facts })).toEqual([]);
+  });
+});
+
+// The 49-file dev → main release PR (hot-draw #998) whose lead plan failed twice and fell back to directory scopes.
+describe('large release PR (hot-draw #998)', () => {
+  const configScopes: ConfigScope[] = [
+    { name: 'cloud functions', paths: ['functions/**', 'shared/**'], focus: 'Firebase trigger safety' },
+    { name: 'firebase rules', paths: ['firestore.rules', 'storage.rules', 'firestore.indexes.json', 'firebase.json'] },
+  ];
+  const groups: Record<string, string[]> = {
+    'cloud functions': ['functions/src/draws.ts', 'functions/src/webhooks.ts'],
+    'cloud functions tests': ['functions/src/draws.test.ts', 'functions/src/webhooks.test.ts'],
+    tooling: ['.github/workflows/e2e.yml', 'docs/tooling.md', 'oxfmt.config.ts', 'package.json', 'scripts/ci-local.sh', '.oxfmtignore'],
+    'checkout and subscriptions': [
+      'src/lib/subscriptions/couponRules/index.ts',
+      'src/lib/subscriptions/couponRules/percent.ts',
+      'src/lib/subscriptions/couponRules/fixed.ts',
+      'src/lib/subscriptions/couponRules/validate.ts',
+      'src/routes/(main)/checkout/+page.svelte',
+      'src/routes/(main)/checkout/+page.server.ts',
+      'src/routes/(main)/checkout/success/+page.svelte',
+      'src/routes/(main)/api/checkout/+server.ts',
+      'src/routes/(main)/api/coupons/+server.ts',
+      'src/stores/cart.ts',
+      'tests/checkout.spec.ts',
+      'tests/coupons.test.ts',
+      'tests/cart.test.ts',
+    ],
+    prizes: [
+      'src/lib/prizes/draw.ts',
+      'src/lib/prizes/odds.ts',
+      'src/lib/prizes/format.ts',
+      'src/routes/(main)/prizes/[pid]/+page.svelte',
+      'src/routes/(main)/prizes/[pid]/+page.server.ts',
+      'src/routes/(main)/api/prizes/[pid]/+server.ts',
+      'src/components/PrizeCard.svelte',
+      'tests/prizes.test.ts',
+      'tests/prize-page.spec.ts',
+    ],
+    'server, analytics and feeds': [
+      'src/lib/server/db.ts',
+      'src/lib/server/auth.ts',
+      'src/lib/server/session.ts',
+      'src/lib/analytics/track.ts',
+      'src/lib/analytics/events.ts',
+      'src/lib/feeds/rss.ts',
+      'src/lib/feeds/sitemap.ts',
+      'tests/feeds.test.ts',
+      'tests/analytics.test.ts',
+    ],
+    'shared UI and helpers': [
+      'src/lib/helpers/dates.ts',
+      'src/lib/helpers/money.ts',
+      'src/lib/utils/slug.ts',
+      'src/lib/utils/retry.ts',
+      'src/components/Header.svelte',
+      'src/components/Footer.svelte',
+      'src/components/Countdown.svelte',
+      'src/stores/user.ts',
+    ],
+  };
+  const facts = Object.values(groups)
+    .flat()
+    .map((path) => (path === '.oxfmtignore' ? fact(path, 0, 12, 'deleted') : fact(path, 40, 10)));
+  const opts = { ...caps, configScopes };
+  // What a lead grouping by concern plausibly writes: the deleted .oxfmtignore beside its oxfmt.config.ts
+  // replacement, the functions tests in their own scope, and one concern that runs over the file cap.
+  const leadPlan = { scopes: Object.entries(groups).map(([name, files]) => scope(name, files)) };
+
+  test('is the 49-file PR', () => {
+    expect(facts).toHaveLength(49);
+  });
+
+  test('errors name the file or scope and say exactly how to fix it', () => {
+    const errors = checkPlan(leadPlan, { ...opts, facts });
+    expect(codes(errors).sort()).toEqual(['plan.config_scope', 'plan.config_scope', 'plan.too_many_files']);
+
+    const misplaced = errors.find((e) => e.code === 'plan.config_scope')!;
+    expect(misplaced.message).toContain('move it to a scope named exactly "cloud functions"');
+    expect(misplaced.message).toContain('"cloud functions (1)"');
+
+    const oversize = errors.find((e) => e.code === 'plan.too_many_files')!;
+    expect(oversize.message).toContain('split it');
+    expect(oversize.message).toContain('"checkout and subscriptions (1)": [src/lib/subscriptions/couponRules/index.ts,');
+    expect(oversize.message).toContain('"checkout and subscriptions (2)": [tests/cart.test.ts]');
+  });
+
+  test("the fallback repairs the lead's plan instead of regrouping by directory", () => {
+    const plan = fallbackPlan(facts, opts, leadPlan);
+    expect(plan.scopes.map((s) => s.name)).toEqual([
+      'cloud functions',
+      'tooling',
+      'checkout and subscriptions (1)',
+      'checkout and subscriptions (2)',
+      'prizes',
+      'server, analytics and feeds',
+      'shared UI and helpers',
+    ]);
+    expect(plan.scopes[0].files).toEqual([...groups['cloud functions'], ...groups['cloud functions tests']]);
+    expect(plan.scopes[0].focus).toBe('Review cloud functions');
+    expect(plan.scopes[1].files).toContain('.oxfmtignore');
+    expect(plan.scopes[4]).toEqual(scope('prizes', groups.prizes));
+    expect(checkPlan(plan, { ...opts, facts })).toEqual([]);
+  });
+});
+
+describe('fallbackPlan with a draft', () => {
+  test('drops unknown and duplicate paths, sends misplaced config files home, and groups the unplaced by directory', () => {
+    const configScopes: ConfigScope[] = [{ name: 'api', paths: ['src/api/**'], focus: 'Auth checks' }];
+    const facts = [fact('src/api/a.ts'), fact('src/ui.ts'), fact('src/ui2.ts'), fact('docs/x.md')];
+    const draft = { scopes: [scope('ui', ['src/ui.ts', 'src/api/a.ts', 'nope.ts', 'src/ui.ts']), scope('tests', ['src/ui2.ts'])] };
+    expect(fallbackPlan(facts, { ...caps, configScopes }, draft).scopes).toEqual([
+      scope('ui', ['src/ui.ts']),
+      scope('tests', ['src/ui2.ts']),
+      { name: 'api', files: ['src/api/a.ts'], focus: 'Auth checks', context: [] },
+      { name: 'docs', files: ['docs/x.md'], focus: 'General review of docs', context: [] },
+    ]);
+  });
+
+  test('an unusable draft falls back to directory scopes', () => {
+    const facts = [fact('src/a.ts')];
+    const expected = [{ name: 'src', files: ['src/a.ts'], focus: 'General review of src', context: [] }];
+    expect(fallbackPlan(facts, caps, undefined).scopes).toEqual(expected);
+    expect(fallbackPlan(facts, caps, { scopes: [{ name: 'x' }] }).scopes).toEqual(expected);
   });
 });
 

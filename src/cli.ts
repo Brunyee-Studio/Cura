@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { allowedTools, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
+import { allowedTools, allowsDirectReview, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
@@ -11,6 +11,7 @@ import { OCR_VERSION, resolveOcr } from './install.ts';
 import { checkPlan, fallbackPlan } from './plan.ts';
 import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
 import { loadSchema } from './schema.ts';
+import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
 
 type Env = NodeJS.ProcessEnv;
@@ -38,6 +39,7 @@ interface RunState {
   headSha: string;
   maxFiles: number;
   maxLines: number;
+  reviewLines: number;
 }
 
 const USAGE = `usage: node src/cli.ts <command>
@@ -55,7 +57,7 @@ const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan
 // check rejects a heredoc carrying JSON, so the checker can't take them on stdin.
 const REVIEW_DRAFT = 'review.json';
 const PLAN_DRAFT = 'plan.json';
-const FALLBACK_PREFIX = 'FALLBACK PLAN (use this):';
+// The fallback repairs the lead's last draft rather than replacing it, so falling back early costs little.
 const PLAN_FALLBACK_AFTER = 2;
 const FAIL_ON_RANK: Record<string, number> = { P0: 2, P1: 3 };
 const SEVERITIES = new Set<string>(['P0', 'P1', 'P2']);
@@ -196,6 +198,7 @@ function prompt(env: Env, io: Io): void {
     curaDir,
     maxFiles,
     maxLines,
+    directReview: allowsDirectReview(state.reviewLines),
   });
   const model = env.CURA_MODEL || undefined;
   const agentsFile = join(ctxDir, 'agents.json');
@@ -282,7 +285,7 @@ function check(args: string[], env: Env, io: Io): void {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
     const errors = checkPlan(draft, { ...planCaps(ctxDir), facts });
     if (errors.length === 0) return ok(io);
-    return failPlan(ctxDir, io, formatErrors(errors));
+    return failPlan(ctxDir, io, formatErrors(errors), draft);
   }
 
   const errors = checkReview(draft, loadFacts(ctxDir));
@@ -300,14 +303,14 @@ function fail(io: Io, message: string): void {
   io.exit(1);
 }
 
-function failPlan(ctxDir: string, io: Io, message: string): void {
+function failPlan(ctxDir: string, io: Io, message: string, draft?: unknown): void {
   const attemptsFile = join(ctxDir, 'plan-attempts');
   const attempts = (existsSync(attemptsFile) ? Number(readFileSync(attemptsFile, 'utf8')) || 0 : 0) + 1;
   writeFileSync(attemptsFile, String(attempts));
   io.stdout(message);
   if (attempts >= PLAN_FALLBACK_AFTER) {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
-    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir)))}`);
+    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir), draft))}`);
   }
   io.exit(1);
 }
@@ -341,6 +344,7 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   } else if (agentSucceeded) {
     review = executionFile === null ? parseJson(raw) : structuredOutputFrom(executionFile);
   }
+  if (executionFile !== null) reportTrace(env, io, executionFile, state, review);
 
   const markFailed = () => {
     const previous = readJson<{ body?: string }>(ctxDir, 'summary-comment.json');
@@ -408,6 +412,18 @@ function structuredOutputFrom(file: string): unknown {
     | undefined;
   if (result?.subtype !== 'success' || result.is_error || !result.structured_output) return undefined;
   return result.structured_output;
+}
+
+/** The lead's trace goes to the job summary only, never the PR; an unreadable execution file just has none. */
+function reportTrace(env: Env, io: Io, file: string, state: RunState, review: unknown): void {
+  const trace = readTrace(file);
+  if (trace === null) return;
+  stepSummary(env, io, renderTrace(trace));
+  const ctxDir = ctxFromEnv(env);
+  const { findings, discarded } = (review ?? {}) as Partial<Review>;
+  const candidates = (Array.isArray(findings) ? findings.length : 0) + (Array.isArray(discarded) ? discarded.length : 0);
+  const openThreads = readJson<Thread[]>(ctxDir, 'threads.json').filter((t) => !t.isResolved).length;
+  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads })) io.stdout(`::warning::Cura: ${warning}`);
 }
 
 function parseJson(text: string): unknown {
