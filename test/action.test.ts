@@ -84,6 +84,17 @@ describe('action.yml', () => {
     expect(publish).toContain("REVIEW: ${{ steps.claude.outputs.execution_file == '' && steps.claude.outputs.structured_output || '' }}");
   });
 
+  // Under `claude -p` subagents run in the background by default, and the lead
+  // returned its review while its reviewers were still running. claude-code-action's
+  // step env shadows only the vars it lists, so the setting goes through $GITHUB_ENV.
+  test('runs subagents in the foreground so the lead cannot return before them', () => {
+    const keys = steps().map((s) => s.key);
+    const setter = steps().findIndex((s) => s.text.includes('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'));
+    expect(setter, 'step setting CLAUDE_CODE_DISABLE_BACKGROUND_TASKS').toBeGreaterThanOrEqual(0);
+    expect(setter).toBeLessThan(keys.indexOf('claude'));
+    expect(steps()[setter]!.text).toContain('echo "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" >> "$GITHUB_ENV"');
+  });
+
   test('passes allowed_bots through to claude-code-action', () => {
     expect(step('claude')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
   });

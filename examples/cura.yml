@@ -28,7 +28,7 @@ jobs:
     #   fail_on: none
     #   max_files_per_scope: 12
     #   max_lines_per_scope: 1500
-    #   timeout_minutes: 45
+    #   timeout_minutes: 20
     #   allowed_bots: ''
     #   allow_forks: false
     secrets:
@@ -54,7 +54,7 @@ jobs:
 #       group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
 #       cancel-in-progress: true
 #     runs-on: ubuntu-latest
-#     timeout-minutes: 45
+#     timeout-minutes: 20
 #     permissions:
 #       contents: write
 #       pull-requests: write

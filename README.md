@@ -88,7 +88,7 @@ Comment `/cura` on the PR to review it again. You must be an owner, member or co
 | `fail_on` | string | `none` | Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`) |
 | `max_files_per_scope` | number | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | number | `1500` | Chunk cap: changed lines (added + removed) per review scope |
-| `timeout_minutes` | number | `45` | Timeout for the review job |
+| `timeout_minutes` | number | `20` | Timeout for the review job |
 | `allowed_bots` | string | `''` | Comma-separated bot logins allowed to trigger the review |
 | `allow_forks` | boolean | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 

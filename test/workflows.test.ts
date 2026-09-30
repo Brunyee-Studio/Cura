@@ -112,7 +112,7 @@ describe('review.yml', () => {
       'allowed_bots',
       'allow_forks',
     ]);
-    expect(reviewInputs.get('timeout_minutes')).toBe('45');
+    expect(reviewInputs.get('timeout_minutes')).toBe('20');
   });
 
   test('every input is forwarded to the action or used by the job', () => {

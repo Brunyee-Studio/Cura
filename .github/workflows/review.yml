@@ -39,7 +39,7 @@ on:
       timeout_minutes:
         description: Timeout for the review job.
         type: number
-        default: 45
+        default: 20
       allowed_bots:
         description: Comma-separated bot logins allowed to trigger the review (e.g. `dependabot[bot]`).
         type: string
