@@ -22,6 +22,9 @@ export interface AgentDefinition {
   model?: string;
 }
 
+/** Subdirectory of the context dir the lead writes its drafts to for the checker. */
+export const DRAFTS_DIR = 'drafts';
+
 const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
 
 function readTemplate(name: string): string {
@@ -93,8 +96,9 @@ export function buildAgents(vars: { base: string; model?: string }): Record<stri
 }
 
 // The lead reads untrusted PR content, so Bash is pinned to the exact command
-// forms the prompt uses, bound to this PR's base and Cura's own dirs. ocr is
-// not granted: the context step already ran it with the base-branch rules. After
+// forms the prompt uses, bound to this PR's base and Cura's own dirs. File
+// writes (Edit rules cover Write) are limited to the drafts the checker reads.
+// ocr is not granted: the context step already ran it with the base-branch rules. After
 // `--` every git argument is a pathspec, so the diff form can't take options.
 // `ctxDir` is absolute, so `Read(/<ctxDir>/**)` yields Claude Code's `//abs` form.
 export function allowedTools(vars: { base: string; ctxDir: string; curaDir: string }): string {
@@ -104,6 +108,7 @@ export function allowedTools(vars: { base: string; ctxDir: string; curaDir: stri
     `Bash(node ${vars.curaDir}/src/cli.ts check --ctx ${vars.ctxDir}:*)`,
     'Read(./**)',
     `Read(/${vars.ctxDir}/**)`,
+    `Edit(/${vars.ctxDir}/${DRAFTS_DIR}/**)`,
     'Grep',
     'Glob',
     'Agent',

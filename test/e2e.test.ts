@@ -248,11 +248,15 @@ function env(over: Record<string, string> = {}): Record<string, string> {
   };
 }
 
-/** Runs one CLI step with fresh step-output files; returns its stdout, exit code and outputs. */
-async function step(argv: string[], deps: Partial<Deps>, over: Record<string, string> = {}, stdin = '') {
+/** Runs one CLI step with fresh step-output files (and `draft` as the lead's review draft); returns its stdout, exit code and outputs. */
+async function step(argv: string[], deps: Partial<Deps>, over: Record<string, string> = {}, draft?: string) {
   writeFileSync(outputFile, '');
   writeFileSync(stepSummaryFile, '');
-  const { io, text, code } = makeIo(stdin);
+  if (draft !== undefined) {
+    mkdirSync(join(ctx, 'drafts'), { recursive: true });
+    writeFileSync(join(ctx, 'drafts', 'review.json'), draft);
+  }
+  const { io, text, code } = makeIo();
   await main(argv, env(over), io, deps);
   const outputs = Object.fromEntries(
     readFileSync(outputFile, 'utf8').split('\n').filter((l) => /^\w+=/.test(l)).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]),

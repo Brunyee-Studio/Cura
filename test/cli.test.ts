@@ -139,9 +139,15 @@ describe('--help', () => {
 });
 
 describe('check', () => {
+  const draftIo = (draft: string, file = 'review.json') => {
+    mkdirSync(join(ctx, 'drafts'), { recursive: true });
+    writeFileSync(join(ctx, 'drafts', file), draft);
+    return makeIo();
+  };
+
   test('prints OK and exits 0 for a valid review', async () => {
     seedCtx();
-    const { io, text, code } = makeIo(JSON.stringify(review()));
+    const { io, text, code } = draftIo(JSON.stringify(review()));
     await main(['check', '--ctx', ctx], {}, io);
     expect(text()).toBe('OK');
     expect(code()).toBe(0);
@@ -149,23 +155,31 @@ describe('check', () => {
 
   test('prints errors and exits 1 for an invalid review', async () => {
     seedCtx();
-    const { io, text, code } = makeIo(JSON.stringify(review({ findings: [finding({ line: 400 })] })));
+    const { io, text, code } = draftIo(JSON.stringify(review({ findings: [finding({ line: 400 })] })));
     await main(['check', '--ctx', ctx], {}, io);
     expect(text()).toContain('/findings/0');
     expect(code()).toBe(1);
   });
 
-  test('reports malformed JSON on stdin', async () => {
+  test('reports a malformed draft', async () => {
     seedCtx();
-    const { io, text, code } = makeIo('{not json');
+    const { io, text, code } = draftIo('{not json');
     await main(['check', '--ctx', ctx], {}, io);
     expect(text()).toMatch(/^json\.invalid/);
     expect(code()).toBe(1);
   });
 
+  test('reports a missing draft', async () => {
+    seedCtx();
+    const { io, text, code } = makeIo();
+    await main(['check', '--ctx', ctx], {}, io);
+    expect(text()).toMatch(/^json\.invalid drafts\/review\.json/);
+    expect(code()).toBe(1);
+  });
+
   test('falls back to CURA_CTX when --ctx is absent', async () => {
     seedCtx();
-    const { io, code } = makeIo(JSON.stringify(review()));
+    const { io, code } = draftIo(JSON.stringify(review()));
     await main(['check'], { CURA_CTX: ctx }, io);
     expect(code()).toBe(0);
   });
@@ -182,7 +196,7 @@ describe('check', () => {
     [['check', '--ctx', 'CTX/']],
   ])('rejects %j with a usage error (exit 2)', async (argv) => {
     seedCtx();
-    const { io, text, code } = makeIo(JSON.stringify(review()));
+    const { io, text, code } = draftIo(JSON.stringify(review()));
     await main(argv.map((a) => a.replace('CTX', ctx)), {}, io);
     expect(text()).toContain('usage');
     expect(code()).toBe(2);
@@ -192,7 +206,7 @@ describe('check', () => {
     seedCtx();
     const other = join(root, 'other');
     mkdirSync(other);
-    const { io, text, code } = makeIo(JSON.stringify(review()));
+    const { io, text, code } = draftIo(JSON.stringify(review()));
     await main(['check', '--ctx', other], { CURA_CTX: ctx }, io);
     expect(text()).toContain('usage');
     expect(code()).toBe(2);
@@ -200,7 +214,7 @@ describe('check', () => {
 
   test('accepts --ctx equal to CURA_CTX', async () => {
     seedCtx();
-    const { io, code } = makeIo(JSON.stringify(review()));
+    const { io, code } = draftIo(JSON.stringify(review()));
     await main(['check', '--ctx', ctx], { CURA_CTX: ctx }, io);
     expect(code()).toBe(0);
   });
@@ -208,7 +222,7 @@ describe('check', () => {
   test('--plan may come before --ctx', async () => {
     seedCtx();
     const plan = { scopes: [{ name: 'src', files: ['src/a.ts'], focus: 'x', context: [] }] };
-    const { io, text, code } = makeIo(JSON.stringify(plan));
+    const { io, text, code } = draftIo(JSON.stringify(plan), 'plan.json');
     await main(['check', '--plan', '--ctx', ctx], {}, io);
     expect(text()).toBe('OK');
     expect(code()).toBe(0);
@@ -218,13 +232,13 @@ describe('check', () => {
     seedCtx();
     const bad = JSON.stringify({ scopes: [{ name: 'x', files: ['nope.ts'], focus: 'x', context: [] }] });
 
-    const first = makeIo(bad);
+    const first = draftIo(bad, 'plan.json');
     await main(['check', '--ctx', ctx, '--plan'], {}, first.io);
     expect(first.code()).toBe(1);
     expect(first.text()).toContain('plan.missing');
     expect(first.text()).not.toContain('FALLBACK PLAN');
 
-    const second = makeIo(bad);
+    const second = draftIo(bad, 'plan.json');
     await main(['check', '--ctx', ctx, '--plan'], {}, second.io);
     expect(second.code()).toBe(1);
     const line = second.text().split('\n').find((l) => l.startsWith('FALLBACK PLAN (use this):'));
@@ -243,7 +257,7 @@ describe('check', () => {
       ],
     });
     const plan = { scopes: [{ name: 'src', files: ['src/a.ts', 'src/b.ts'], focus: 'x', context: [] }] };
-    const { io, text, code } = makeIo(JSON.stringify(plan));
+    const { io, text, code } = draftIo(JSON.stringify(plan), 'plan.json');
     await main(['check', '--ctx', ctx, '--plan'], { CURA_MAX_FILES: '50' }, io);
     expect(text()).toContain('plan.too_many_files');
     expect(code()).toBe(1);

@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { allowedTools, buildAgents, disallowedTools, renderLeadPrompt } from './agents.ts';
+import { allowedTools, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
@@ -16,7 +16,6 @@ import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread }
 type Env = NodeJS.ProcessEnv;
 
 export interface Io {
-  stdin: () => Promise<string>;
   stdout: (s: string) => void;
   exit: (code: number) => void;
 }
@@ -47,11 +46,15 @@ commands:
   install                       resolve or download the ocr binary
   context                       gather PR context into $CURA_CTX
   prompt                        render the lead prompt, agents and tool rules
-  check [--ctx <dir>] [--plan]  validate a review (or, with --plan, a scope plan) read from stdin
+  check [--ctx <dir>] [--plan]  validate the review draft (or, with --plan, the scope plan) in <dir>/drafts/
   publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
   --help                        show this help`;
 
 const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan]';
+// The lead writes its drafts here (see DRAFTS_DIR): Claude Code's Bash permission
+// check rejects a heredoc carrying JSON, so the checker can't take them on stdin.
+const REVIEW_DRAFT = 'review.json';
+const PLAN_DRAFT = 'plan.json';
 const FALLBACK_PREFIX = 'FALLBACK PLAN (use this):';
 const PLAN_FALLBACK_AFTER = 2;
 const FAIL_ON_RANK: Record<string, number> = { P0: 2, P1: 3 };
@@ -261,16 +264,17 @@ function parseCheckArgs(args: string[], env: Env): { ctxDir: string; plan: boole
   return { ctxDir, plan };
 }
 
-async function check(args: string[], env: Env, io: Io): Promise<void> {
+function check(args: string[], env: Env, io: Io): void {
   const parsed = parseCheckArgs(args, env);
   if (!parsed) return usageError(io, CHECK_USAGE);
   const { ctxDir, plan } = parsed;
 
+  const draftFile = join(DRAFTS_DIR, plan ? PLAN_DRAFT : REVIEW_DRAFT);
   let draft: unknown;
   try {
-    draft = JSON.parse(await io.stdin());
+    draft = JSON.parse(readFileSync(join(ctxDir, draftFile), 'utf8'));
   } catch (err) {
-    const message = `json.invalid stdin is not valid JSON: ${(err as Error).message}`;
+    const message = `json.invalid ${draftFile} is not readable JSON: ${(err as Error).message}`;
     return plan ? failPlan(ctxDir, io, message) : fail(io, message);
   }
 
@@ -509,11 +513,6 @@ function stepSummary(env: Env, io: Io, markdown: string): void {
 
 if (import.meta.main) {
   main(process.argv.slice(2), process.env, {
-    stdin: async () => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-      return Buffer.concat(chunks).toString('utf8');
-    },
     stdout: (s) => void process.stdout.write(`${s}\n`),
     exit: (code) => {
       process.exitCode = code;
