@@ -18,7 +18,7 @@ inputs:
     description: Claude Code subscription token.
     required: true
   github_token:
-    description: 'Token with `contents: read`, `pull-requests: write` and `issues: write`.'
+    description: 'Token with `contents: write`, `pull-requests: write` and `issues: write`.'
     required: false
     default: ${{ github.token }}
   rules:

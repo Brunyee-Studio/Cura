@@ -49,9 +49,9 @@ function threadNode(
 /**
  * Recording fake: every REST call and GraphQL mutation is logged as {method, path, body}.
  * `threads` is the sequence of thread lists returned by successive thread fetches (the last one repeats).
- * `fail422` makes matching REST calls throw a 422.
+ * `fail422` makes matching REST calls throw a 422; `refuseResolve` makes the resolve mutation return GraphQL errors.
  */
-function fakeGitHub(opts: { threads?: ThreadNode[][]; fail422?: (call: Call) => boolean; previousSummary?: string } = {}) {
+function fakeGitHub(opts: { threads?: ThreadNode[][]; fail422?: (call: Call) => boolean; refuseResolve?: boolean; previousSummary?: string } = {}) {
   const calls: Call[] = [];
   const threadPages = [...(opts.threads ?? [[]])];
   let nextId = 1000;
@@ -71,6 +71,7 @@ function fakeGitHub(opts: { threads?: ThreadNode[][]; fail422?: (call: Call) => 
     async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
       if (query.includes('resolveReviewThread')) {
         calls.push({ method: 'GRAPHQL', path: 'resolveReviewThread', body: variables });
+        if (opts.refuseResolve) throw new GitHubError('GitHub GraphQL request returned errors: Resource not accessible by integration', 200, {});
         return { resolveReviewThread: { thread: { id: variables.threadId } } } as T;
       }
       calls.push({ method: 'GRAPHQL', path: 'reviewThreads' });
@@ -226,7 +227,7 @@ describe('publish', () => {
     expect(result).toMatchObject({ score: 5, findings: 0, unanchored: [outside] });
   });
 
-  test('resolved thread gets a reply, then the resolve mutation', async () => {
+  test('resolved thread gets the resolve mutation, then a reply', async () => {
     const old = finding();
     const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_1', 101, old)], [threadNode('RT_1', 101, old, { isResolved: true })]] });
 
@@ -234,14 +235,14 @@ describe('publish', () => {
 
     const lifecycle = calls.filter((c) => c.path.endsWith('/replies') || c.path === 'resolveReviewThread');
     expect(lifecycle).toEqual([
-      { method: 'POST', path: '/repos/o/r/pulls/7/comments/101/replies', body: { body: 'Resolved in `abcdef1`: bounds fixed' } },
       { method: 'GRAPHQL', path: 'resolveReviewThread', body: { threadId: 'RT_1' } },
+      { method: 'POST', path: '/repos/o/r/pulls/7/comments/101/replies', body: { body: 'Resolved in `abcdef1`: bounds fixed' } },
     ]);
     expect(result.score).toBe(5);
     expect(summaryBody(calls)).toContain('### Resolved since last review');
   });
 
-  test('dismissed thread gets a Dismissed reply, then the resolve mutation', async () => {
+  test('dismissed thread gets the resolve mutation, then a Dismissed reply', async () => {
     const old = finding();
     const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_1', 101, old)]] });
 
@@ -249,11 +250,25 @@ describe('publish', () => {
 
     const lifecycle = calls.filter((c) => c.path.endsWith('/replies') || c.path === 'resolveReviewThread');
     expect(lifecycle).toEqual([
-      { method: 'POST', path: '/repos/o/r/pulls/7/comments/101/replies', body: { body: 'Dismissed: intentional' } },
       { method: 'GRAPHQL', path: 'resolveReviewThread', body: { threadId: 'RT_1' } },
+      { method: 'POST', path: '/repos/o/r/pulls/7/comments/101/replies', body: { body: 'Dismissed: intentional' } },
     ]);
     expect(result.score).toBe(5);
     expect(summaryBody(calls)).toContain('### Dismissed');
+  });
+
+  test('a refused resolve leaves the thread open without a reply and still writes the summary', async () => {
+    const old = finding();
+    const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_1', 101, old)]], refuseResolve: true });
+
+    const result = await run(gh, { review: review({ resolved: [{ thread_id: 'RT_1', note: 'bounds fixed' }] }) });
+
+    expect(calls.filter((c) => c.path.endsWith('/replies'))).toEqual([]);
+    expect(result.unresolved).toEqual([
+      { url: 'https://github.com/o/r/pull/7#discussion_r101', error: 'GitHub GraphQL request returned errors: Resource not accessible by integration' },
+    ]);
+    expect(result).toMatchObject({ findings: 1, failed: false });
+    expect(summaryBody(calls)).not.toContain('### Resolved since last review');
   });
 
   test('human-resolved thread is untouched and not scored', async () => {
@@ -404,7 +419,7 @@ describe('publish', () => {
     expect(body).toContain('**Confidence 5/5** — No open findings');
     expect(body).toContain('`/cura` to re-run');
     expect(body).toContain(`<!-- cura:reviewed-sha=${HEAD} -->`);
-    expect(result).toEqual({ score: 5, findings: 0, summaryUrl: 'https://github.com/o/r/pull/7#issuecomment-1000', unanchored: [], failed: false });
+    expect(result).toEqual({ score: 5, findings: 0, summaryUrl: 'https://github.com/o/r/pull/7#issuecomment-1000', unanchored: [], unresolved: [], failed: false });
   });
 
   test('invalid review publishes a failure summary and reports failed', async () => {

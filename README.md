@@ -55,7 +55,7 @@ on:
 jobs:
   review:
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     uses: Brunyee-Studio/cura/.github/workflows/review.yml@v1
@@ -71,7 +71,7 @@ The reusable workflow ([`.github/workflows/review.yml`](.github/workflows/review
 - refuses PRs from forks;
 - checks out the PR head and runs the action.
 
-Because a called workflow's token can't have more permissions than its caller grants, the calling job must grant the three permissions shown.
+Because a called workflow's token can't have more permissions than its caller grants, the calling job must grant the three permissions shown. `contents: write` is needed only to resolve review threads, which GitHub gates on repository write access.
 
 ### Re-running with `/cura`
 
@@ -107,7 +107,7 @@ Before the action runs, the caller must:
 - check out the **PR head**, not the merge commit, so that inline comment lines match the PR diff;
 - use `fetch-depth: 0`, because the review diffs against the base branch's history;
 - use `persist-credentials: false`, because the reviewer can read the workspace and the checkout token must stay out of `.git/config`;
-- grant `contents: read`, `pull-requests: write` and `issues: write`.
+- grant `contents: write`, `pull-requests: write` and `issues: write`.
 
 The action checks that `HEAD` is the PR's head commit and fails otherwise.
 
@@ -140,7 +140,7 @@ steps:
 | Input | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `claude_code_oauth_token` | yes | — | Claude Code subscription token |
-| `github_token` | no | `${{ github.token }}` | Token with `contents: read`, `pull-requests: write` and `issues: write` |
+| `github_token` | no | `${{ github.token }}` | Token with `contents: write`, `pull-requests: write` and `issues: write` |
 | `rules` | no | `.opencodereview/rule.json` | OCR rule file, read from the PR's base branch (skipped when absent there) |
 | `config` | no | `.github/cura.json` | Cura config file, read from the PR's base branch |
 | `pr` | no | `''` | PR number; defaults to the triggering `pull_request` or `issue_comment` event's PR |

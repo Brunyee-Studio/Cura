@@ -131,6 +131,6 @@ describe('graphql', () => {
     const { gh } = setup([{ status: 200, body: { data: null, errors } }]);
     const err = await gh.graphql('q', {}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GitHubError);
-    expect(err).toMatchObject({ status: 200, body: { errors } });
+    expect(err).toMatchObject({ status: 200, body: { errors }, message: 'GitHub GraphQL request returned errors: Could not resolve' });
   });
 });

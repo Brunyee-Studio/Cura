@@ -15,7 +15,7 @@ jobs:
   review:
     # The called workflow's token can't have more than the caller grants.
     permissions:
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
     uses: Brunyee-Studio/cura/.github/workflows/review.yml@v1
@@ -56,7 +56,7 @@ jobs:
 #     runs-on: ubuntu-latest
 #     timeout-minutes: 45
 #     permissions:
-#       contents: read
+#       contents: write
 #       pull-requests: write
 #       issues: write
 #     steps:

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parse as parseShell } from 'shell-quote';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { main, shellQuote, type Deps } from '../src/cli.ts';
-import type { GitHub } from '../src/github.ts';
+import { GitHubError, type GitHub } from '../src/github.ts';
 import { assetName } from '../src/install.ts';
 import type { Finding, Review } from '../src/types.ts';
 import { makeIo } from './io.ts';
@@ -20,7 +20,7 @@ interface Call {
 }
 
 /** Recording fake GitHub: REST writes return an html_url, thread fetches return no threads. */
-function fakeGitHub(opts: { pr?: unknown; comments?: unknown[] } = {}) {
+function fakeGitHub(opts: { pr?: unknown; comments?: unknown[]; graphqlError?: GitHubError } = {}) {
   const calls: Call[] = [];
   let nextId = 500;
   const gh: GitHub = {
@@ -37,6 +37,7 @@ function fakeGitHub(opts: { pr?: unknown; comments?: unknown[] } = {}) {
     },
     async graphql<T>(): Promise<T> {
       calls.push({ method: 'GRAPHQL', path: 'reviewThreads' });
+      if (opts.graphqlError) throw opts.graphqlError;
       return { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } as T;
     },
   };
@@ -393,6 +394,14 @@ describe('publish', () => {
     const body = sentBody(calls, 'PATCH', '/repos/o/r/issues/comments/42');
     expect(body).toContain('Review failed');
     expect(body).toContain('old result');
+  });
+
+  test('a publish that throws marks the summary failed and rethrows', async () => {
+    seedCtx();
+    const { gh, calls } = fakeGitHub({ graphqlError: new GitHubError('GitHub GraphQL request returned errors: boom', 200, {}) });
+    const { io } = makeIo();
+    await expect(main(['publish'], env({ REVIEW: JSON.stringify(review()) }), io, { createGitHub: () => gh })).rejects.toThrow('boom');
+    expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
   });
 
   test('agent outcome other than success marks the summary failed', async () => {

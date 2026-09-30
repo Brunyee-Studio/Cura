@@ -33,7 +33,14 @@ export interface PublishResult {
   findings: number;
   summaryUrl: string;
   unanchored: Finding[];
+  /** Threads the review closed but GitHub refused to resolve; they stay open and scored. */
+  unresolved: UnresolvedThread[];
   failed: boolean;
+}
+
+export interface UnresolvedThread {
+  url: string;
+  error: string;
 }
 
 export interface PublishFailureOptions {
@@ -79,7 +86,7 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
   if (validate(loadSchema('review'), opts.review).length > 0) {
     const previousBody = opts.summaryId === null ? null : await fetchSummaryBody(ctx, opts.summaryId);
     const summaryUrl = await publishFailure({ gh, repo, pr, summaryId: opts.summaryId, previousBody, runUrl: opts.runUrl, headSha });
-    return { score: 0, findings: 0, summaryUrl, unanchored: [], failed: true };
+    return { score: 0, findings: 0, summaryUrl, unanchored: [], unresolved: [], failed: true };
   }
 
   const review = opts.review as Review;
@@ -109,7 +116,7 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
     rerun: '/cura',
   });
   const summaryUrl = await writeSummary(ctx, opts.summaryId, body);
-  return { score: score(open), findings: open.length, summaryUrl, unanchored, failed: false };
+  return { score: score(open), findings: open.length, summaryUrl, unanchored, unresolved: closed.unresolved, failed: false };
 }
 
 /** Marks the summary comment as failed, keeping the previous result visible. Returns the summary URL. */
@@ -225,24 +232,36 @@ function stripSuggestion(body: string): string {
   return body.replace(SUGGESTION_RE, '');
 }
 
-/** Replies to and resolves each fixed or dismissed thread once; human-resolved and unknown threads are left alone. */
+/**
+ * Resolves each fixed or dismissed thread once, then replies; human-resolved and unknown threads are left alone.
+ * Resolving first means a refused resolve (e.g. a token without `contents: write`) leaves no stray reply behind.
+ */
 async function closeThreads(ctx: Ctx, review: Review, threads: Map<string, Thread>) {
   const ids = new Set<string>();
   const resolved: { url: string; path: string; note: string }[] = [];
   const dismissed: { url: string; reason: string }[] = [];
+  const unresolved: UnresolvedThread[] = [];
+  const seen = new Set<string>();
   const closing = [
     ...review.resolved.map((r) => ({ id: r.thread_id, reply: `Resolved in \`${ctx.headSha.slice(0, 7)}\`: ${r.note}`, record: (t: Thread) => resolved.push({ url: t.url, path: t.path, note: r.note }) })),
     ...review.dismissed.map((d) => ({ id: d.thread_id, reply: `Dismissed: ${d.reason}`, record: (t: Thread) => dismissed.push({ url: t.url, reason: d.reason }) })),
   ];
   for (const { id, reply, record } of closing) {
     const thread = threads.get(id);
-    if (!thread || thread.isResolved || ids.has(id)) continue;
+    if (!thread || thread.isResolved || seen.has(id)) continue;
+    seen.add(id);
+    try {
+      await resolveThread(ctx.gh, id);
+    } catch (err) {
+      if (!(err instanceof GitHubError)) throw err;
+      unresolved.push({ url: thread.url, error: err.message });
+      continue;
+    }
     ids.add(id);
     await replyToComment(ctx.gh, ctx.repo, ctx.pr, thread.commentId, reply);
-    await resolveThread(ctx.gh, id);
     record(thread);
   }
-  return { ids, resolved, dismissed };
+  return { ids, resolved, dismissed, unresolved };
 }
 
 /**
