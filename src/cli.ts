@@ -11,6 +11,7 @@ import { OCR_VERSION, resolveOcr } from './install.ts';
 import { checkPlan, fallbackPlan } from './plan.ts';
 import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
 import { loadSchema } from './schema.ts';
+import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
 
 type Env = NodeJS.ProcessEnv;
@@ -55,7 +56,6 @@ const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan
 // check rejects a heredoc carrying JSON, so the checker can't take them on stdin.
 const REVIEW_DRAFT = 'review.json';
 const PLAN_DRAFT = 'plan.json';
-const FALLBACK_PREFIX = 'FALLBACK PLAN (use this):';
 const PLAN_FALLBACK_AFTER = 2;
 const FAIL_ON_RANK: Record<string, number> = { P0: 2, P1: 3 };
 const SEVERITIES = new Set<string>(['P0', 'P1', 'P2']);
@@ -341,6 +341,7 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   } else if (agentSucceeded) {
     review = executionFile === null ? parseJson(raw) : structuredOutputFrom(executionFile);
   }
+  if (executionFile !== null) reportTrace(env, io, executionFile, state);
 
   const markFailed = () => {
     const previous = readJson<{ body?: string }>(ctxDir, 'summary-comment.json');
@@ -408,6 +409,14 @@ function structuredOutputFrom(file: string): unknown {
     | undefined;
   if (result?.subtype !== 'success' || result.is_error || !result.structured_output) return undefined;
   return result.structured_output;
+}
+
+/** The lead's trace goes to the job summary only, never the PR; an unreadable execution file just has none. */
+function reportTrace(env: Env, io: Io, file: string, state: RunState): void {
+  const trace = readTrace(file);
+  if (trace === null) return;
+  stepSummary(env, io, renderTrace(trace));
+  for (const warning of traceWarnings(trace, { mode: state.mode, reviewable: state.reviewableCount > 0 })) io.stdout(`::warning::Cura: ${warning}`);
 }
 
 function parseJson(text: string): unknown {

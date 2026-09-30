@@ -38,6 +38,8 @@ The summary comment is edited in place on every run. It shows:
 
 The next push is reviewed incrementally from that SHA when it is an ancestor of the new head. If the review fails, the summary says so and links the run.
 
+The job summary (not the PR) gets a **Review trace** read from claude-code-action's execution file: the model, turns, duration and cost; the subagents dispatched, by type; the scope plan checks and whether the fallback plan was used; and each denied tool call with its input, trimmed. The run logs a warning when the verifier never ran, or when a full review with reviewable files dispatched no scope reviewer.
+
 ## Quick start
 
 1. Create a Claude Code OAuth token with `claude setup-token`. Add it as the repository secret `CLAUDE_CODE_OAUTH_TOKEN`.

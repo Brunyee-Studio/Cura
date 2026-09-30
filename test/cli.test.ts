@@ -345,6 +345,62 @@ describe('publish', () => {
     });
   });
 
+  describe('review trace', () => {
+    const fixture = () => JSON.parse(readFileSync(new URL('./fixtures/execution.json', import.meta.url), 'utf8')) as Record<string, unknown>[];
+    const summary = () => (existsSync(summaryFile) ? readFileSync(summaryFile, 'utf8') : '');
+    /** The fixture run carrying a publishable review, minus the messages `drop` matches. */
+    const writeExecution = (drop: (m: Record<string, unknown>) => boolean = () => false) => {
+      const file = join(root, 'claude-execution-output.json');
+      const messages = fixture()
+        .filter((m) => !drop(m))
+        .map((m) => (m.type === 'result' ? { ...m, structured_output: review() } : m));
+      writeFileSync(file, JSON.stringify(messages));
+      return file;
+    };
+    const dispatches = (type: string) => (m: Record<string, unknown>) => JSON.stringify(m).includes(`"subagent_type":"${type}"`);
+
+    test('writes the trace to the job summary without warnings', async () => {
+      seedCtx();
+      const { gh, calls } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution() }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(summary()).toContain('### Cura: review trace');
+      expect(summary()).toContain('scope-reviewer ×2, verifier ×1');
+      expect(summary()).toContain('Plan checks: 2 (fallback plan used)');
+      expect(text()).not.toContain('::warning::');
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('review trace');
+    });
+
+    test('warns when the verifier never ran', async () => {
+      seedCtx();
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('verifier')) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(text()).toContain('::warning::Cura: the verifier never ran, so no finding was verified');
+    });
+
+    test('warns when a full review ran no scope-reviewer', async () => {
+      seedCtx();
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('scope-reviewer')) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(text()).toContain('::warning::Cura: no scope-reviewer ran on this full review');
+    });
+
+    test('REVIEW without an execution file publishes with no trace', async () => {
+      seedCtx();
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ REVIEW: JSON.stringify(review()) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(summary()).not.toContain('review trace');
+      expect(text()).not.toContain('::warning::');
+    });
+  });
+
   test('fail_on P1 fails the step on an open P1 finding', async () => {
     seedCtx();
     const { gh } = fakeGitHub();
