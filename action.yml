@@ -13,9 +13,10 @@ branding:
 # token into the `origin` URL for the Claude step (the session is denied reads
 # of .git/**); the step right after it removes that again, so no token is left
 # in .git/config for the caller's later steps or the next job on the runner.
+# In `mode: rescore` none of that applies: it needs no checkout and no Claude token.
 inputs:
   claude_code_oauth_token:
-    description: Claude Code subscription token.
+    description: Claude Code subscription token (not used in rescore mode).
     required: true
   github_token:
     description: 'Token with `contents: write`, `pull-requests: write` and `issues: write`.'
@@ -68,6 +69,13 @@ inputs:
     required: false
     default: ''
 
+  mode:
+    description: >-
+      `review` runs the review. `rescore` only recomputes the existing summary's score and open-finding links
+      from the open Cura threads, e.g. after a human resolves one: no model, no checkout, and no outputs.
+    required: false
+    default: review
+
 outputs:
   score:
     description: Merge-safety score, 1 (unsafe) to 5 (no findings); 0 when the review failed.
@@ -88,14 +96,20 @@ runs:
     # expression interpolation into the script text.
     - name: Resolve pull request
       id: pr
+      if: inputs.mode != 'rescore'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         REPO: ${{ github.repository }}
         PR: ${{ inputs.pr || github.event.pull_request.number || github.event.issue.number }}
         ALLOW_FORKS: ${{ inputs.allow_forks }}
+        MODE: ${{ inputs.mode }}
       run: |
         set -euo pipefail
+        if [[ "$MODE" != review ]]; then
+          echo "::error::The 'mode' input must be review or rescore."
+          exit 1
+        fi
         if [[ ! "$PR" =~ ^[1-9][0-9]*$ ]]; then
           echo "::error::Cura needs a pull request number; pass a positive integer as the 'pr' input when the triggering event carries none."
           exit 1
@@ -149,6 +163,7 @@ runs:
         node-version: 24
 
     - name: Install OpenCodeReview
+      if: inputs.mode != 'rescore'
       shell: bash
       env:
         CURA_OCR_VERSION: ${{ inputs.ocr_version }}
@@ -157,6 +172,7 @@ runs:
 
     - name: Gather review context
       id: context
+      if: inputs.mode != 'rescore'
       shell: bash
       env:
         GITHUB_TOKEN: ${{ inputs.github_token }}
@@ -175,7 +191,7 @@ runs:
 
     - name: Render review prompt
       id: prompt
-      if: steps.context.outputs.skip_agent != 'true'
+      if: steps.context.outputs.skip_agent == 'false'
       shell: bash
       env:
         CURA_CTX: ${{ runner.temp }}/cura
@@ -198,7 +214,7 @@ runs:
     # summary instead of a review.
     - name: Claude Code review
       id: claude
-      if: steps.context.outputs.skip_agent != 'true'
+      if: steps.context.outputs.skip_agent == 'false'
       continue-on-error: true
       uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236
       with:
@@ -249,3 +265,16 @@ runs:
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       run: |
         node "$GITHUB_ACTION_PATH/src/cli.ts" publish
+
+    # Only the summary's score and open-finding links change (e.g. after a
+    # human resolved a thread), so no model runs and nothing is checked out.
+    - name: Re-score summary
+      id: rescore
+      if: inputs.mode == 'rescore'
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        CURA_PR: ${{ inputs.pr || github.event.pull_request.number }}
+        CURA_BOT_LOGIN: ${{ inputs.bot_login }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/cli.ts" rescore

@@ -10,6 +10,7 @@ import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
 import { OCR_VERSION, resolveOcr } from './install.ts';
 import { checkPlan, fallbackPlan } from './plan.ts';
 import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
+import { rescore, type RescoreResult } from './rescore.ts';
 import { loadSchema } from './schema.ts';
 import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
@@ -50,6 +51,7 @@ commands:
   prompt                        render the lead prompt, agents and tool rules
   check [--ctx <dir>] [--plan]  validate the review draft (or, with --plan, the scope plan) in <dir>/drafts/
   publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
+  rescore                       recompute the summary's score from the open Cura threads (no model)
   --help                        show this help`;
 
 const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan]';
@@ -98,6 +100,8 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
       return check(args, env, io);
     case 'publish':
       return runPublish(env, io, d);
+    case 'rescore':
+      return runRescore(env, io, d);
     default:
       return usageError(io, USAGE);
   }
@@ -448,6 +452,26 @@ function renderUnanchored(findings: Finding[]): string {
 function renderUnresolved(threads: UnresolvedThread[]): string {
   const items = threads.map((t) => `- ${t.url} — ${t.error}`);
   return `### Cura: threads that could not be resolved\n\nThey stay open. Resolving a thread needs a token with \`contents: write\`.\n\n${items.join('\n')}\n`;
+}
+
+// ── rescore ──────────────────────────────────────────────────────────────────
+
+async function runRescore(env: Env, io: Io, d: Deps): Promise<void> {
+  const result = await rescore({ gh: github(env, d), repo: repoFromEnv(env), pr: prFromEnv(env), botLogin: botLogin(env) });
+  io.stdout(rescoreMessage(result));
+}
+
+function rescoreMessage(result: RescoreResult): string {
+  switch (result.status) {
+    case 'no-summary':
+      return 'No Cura summary on this PR; nothing to re-score.';
+    case 'failed-review':
+      return 'The last Cura review failed; its summary is left for the next review.';
+    case 'unchanged':
+      return `Score unchanged: ${result.score}/5, ${result.findings} open finding(s).`;
+    case 'updated':
+      return `Re-scored the summary: ${result.score}/5, ${result.findings} open finding(s).`;
+  }
 }
 
 // ── shared ───────────────────────────────────────────────────────────────────

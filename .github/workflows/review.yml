@@ -1,10 +1,12 @@
 name: Cura review
 
 # Reusable workflow: call it from a workflow triggered by `pull_request`
-# (opened, reopened, ready_for_review, synchronize, edited) and
-# `issue_comment` (created) — see examples/cura.yml. It checks out the PR head
-# and runs the Cura action (the checkout is the caller's repository, so the
-# action is referenced by tag; `v1` moves with this workflow's own tag).
+# (opened, reopened, ready_for_review, synchronize, edited, closed),
+# `issue_comment` (created) and `pull_request_review` (submitted) — see
+# examples/cura.yml. It checks out the PR head and runs the Cura action (the
+# checkout is the caller's repository, so the action is referenced by tag;
+# `v1` moves with this workflow's own tag). A closed PR or a submitted review
+# only re-scores the summary, with no model and no checkout.
 on:
   workflow_call:
     inputs:
@@ -73,6 +75,7 @@ jobs:
       ${{
         (github.event_name == 'pull_request'
           && !github.event.pull_request.draft
+          && github.event.action != 'closed'
           && (github.event.action != 'edited' || github.event.changes.base))
         || (github.event_name == 'issue_comment'
           && github.event.issue.pull_request
@@ -144,3 +147,29 @@ jobs:
           max_lines_per_scope: ${{ inputs.max_lines_per_scope }}
           allowed_bots: ${{ inputs.allowed_bots }}
           allow_forks: ${{ inputs.allow_forks }}
+
+  rescore:
+    name: Cura re-score
+    # GitHub has no Actions event for a resolved thread. The score is refreshed
+    # when a review is submitted, and when the PR closes so a merged PR's
+    # summary ends with the right score.
+    if: >-
+      ${{
+        ((github.event_name == 'pull_request' && github.event.action == 'closed')
+          || github.event_name == 'pull_request_review')
+        && github.event.pull_request.head.repo.full_name == github.repository
+      }}
+    # Its own group, never cancelling a review; a review in progress rewrites
+    # the summary anyway.
+    concurrency:
+      group: cura-rescore-${{ github.event.pull_request.number }}
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Cura
+        uses: Brunyee-Studio/cura@v1
+        with:
+          mode: rescore
+          pr: ${{ github.event.pull_request.number }}

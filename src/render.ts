@@ -13,6 +13,13 @@ const SEVERITY_HEADINGS: Record<Severity, string> = {
   P1: 'P1 — fix before release',
   P2: 'P2 — notes',
 };
+const SCORE_LINE_RE = /^\*\*Confidence [1-5]\/5\*\* — (.*)$/m;
+const UNRESOLVED_LINE_RE = /\n\n> ⚠️ \d+ threads? Cura closed could not be resolved on GitHub and still counts? toward the score: (.*)\.$/m;
+const THREAD_LINK_RE = /\[thread\]\(([^)]*)\)/g;
+const COUNT_PART_RE = /^(\d+ P[012]|No open findings)$/;
+const SEVERITY_RUN_RE = new RegExp(`(?:\\n\\n### (?:${Object.values(SEVERITY_HEADINGS).join('|')})\\n- [^\\n]*(?:\\n- [^\\n]*)*)+`, 'g');
+/** Where each section that follows the open-finding links starts, in render order; the footer's rule always exists. */
+const AFTER_LINKS = [/\n\n### Resolved since last review\n/g, /\n\n### Dismissed\n/g, /\n\n<details><summary>Discarded \(/g, /\n\n> ⚠️ \d+ findings? could not be anchored/g, /\n\n---\n\n<sub>/g];
 
 export interface OpenFindingLink {
   severity: Severity;
@@ -102,12 +109,7 @@ export function renderSummary(input: SummaryInput): string {
 
   if (review.diagram.trim()) sections.push(`### Sequence diagram\n${fenced('mermaid', review.diagram.trim())}`);
 
-  for (const severity of SEVERITIES) {
-    const group = open.filter((o) => o.severity === severity);
-    if (group.length === 0) continue;
-    const links = group.map((o) => `- [\`${o.line === null ? o.path : `${o.path}:${o.line}`}\`](${o.url}) — **${oneLine(o.title)}**`);
-    sections.push(`### ${SEVERITY_HEADINGS[severity]}\n${links.join('\n')}`);
-  }
+  sections.push(...severitySections(open));
 
   if (input.resolved.length > 0) {
     const lines = input.resolved.map((r) => `- [\`${r.path}\`](${r.url}) — ${oneLine(r.note)}`);
@@ -139,6 +141,44 @@ export function renderFailure(input: { previousBody: string | null; runUrl: stri
   if (input.previousBody === null) return `${SUMMARY_MARKER}\n## Cura review\n\n${head}\n`;
   const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '');
   return `${SUMMARY_MARKER}\n${head} Showing the previous result.\n\n${rest}`;
+}
+
+/**
+ * The summary with only its score line and open-finding links recomputed; everything else, the reviewed-sha
+ * marker included, is kept byte for byte. Null for a failed review's summary, which the next review replaces.
+ */
+export function rescoreSummary(body: string, score: number, open: OpenFindingLink[]): string | null {
+  const line = SCORE_LINE_RE.exec(body);
+  if (line === null || FAILURE_LINE_RE.test(body)) return null;
+  const parts = line[1].split(' · ');
+  const noteAt = parts.findIndex((p) => !COUNT_PART_RE.test(p));
+  const riskNote = noteAt === -1 ? '' : parts.slice(noteAt).join(' · ');
+  const rescored = keepOpenUnresolved(body.replace(SCORE_LINE_RE, () => neutraliseMarkers(scoreLine(score, open, riskNote))), open);
+
+  const links = severitySections(open).map((section) => `\n\n${neutraliseMarkers(section)}`).join('');
+  // Model text comes before Cura's own sections, so the last match is Cura's.
+  const existing = [...rescored.matchAll(SEVERITY_RUN_RE)].at(-1);
+  if (existing?.index !== undefined) return rescored.slice(0, existing.index) + links + rescored.slice(existing.index + existing[0].length);
+  const at = Math.min(...AFTER_LINKS.map((re) => [...rescored.matchAll(re)].at(-1)?.index ?? Infinity));
+  return rescored.slice(0, at) + links + rescored.slice(at);
+}
+
+/** Drops threads a human has since resolved from the unresolved warning; the re-score cannot know of new ones. */
+function keepOpenUnresolved(body: string, open: OpenFindingLink[]): string {
+  const openUrls = new Set(open.map((o) => o.url));
+  return body.replace(UNRESOLVED_LINE_RE, (_line, links: string) => {
+    const kept = [...links.matchAll(THREAD_LINK_RE)].filter((m) => openUrls.has(m[1])).map((m) => ({ url: m[1] }));
+    return kept.length === 0 ? '' : `\n\n${neutraliseMarkers(unresolvedLine(kept))}`;
+  });
+}
+
+function severitySections(open: OpenFindingLink[]): string[] {
+  return SEVERITIES.flatMap((severity) => {
+    const group = open.filter((o) => o.severity === severity);
+    if (group.length === 0) return [];
+    const links = group.map((o) => `- [\`${o.line === null ? o.path : `${o.path}:${o.line}`}\`](${o.url}) — **${oneLine(o.title)}**`);
+    return [`### ${SEVERITY_HEADINGS[severity]}\n${links.join('\n')}`];
+  });
 }
 
 function scoreLine(score: number, open: OpenFindingLink[], riskNote: string): string {

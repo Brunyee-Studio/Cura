@@ -25,7 +25,7 @@ Cura posts one summary comment per PR, puts every finding inline on the code, an
   - An issue that still stands is kept, and its comment is edited if its severity, title or body changed.
   - A fixed issue gets the reply `Resolved in <sha>: <note>` and its thread is resolved.
   - When a human's rebuttal is accepted, the thread gets `Dismissed: <reason>` and is resolved.
-  - Threads a human resolved are left alone and not scored.
+  - Threads a human resolved are left alone and not scored. The summary's score catches up on the next review, when a PR review is submitted, and when the PR closes (see [Re-scoring](#re-scoring-without-a-review)).
 
 Severities are `P0` (blocks merge), `P1` (fix before release) and `P2` (note). Categories are `correctness`, `security`, `data-loss`, `performance`, `contract`, `convention`, `test` and `docs`.
 
@@ -51,9 +51,11 @@ name: Cura
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, synchronize, edited]
+    types: [opened, reopened, ready_for_review, synchronize, edited, closed]
   issue_comment:
     types: [created]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
   review:
@@ -66,13 +68,15 @@ jobs:
       claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
-The reusable workflow ([`.github/workflows/review.yml`](.github/workflows/review.yml)) runs one job, which:
+The reusable workflow ([`.github/workflows/review.yml`](.github/workflows/review.yml)) runs a review job, which:
 
-- skips draft PRs and title or body edits (`edited` runs only when the base branch changes);
+- skips draft PRs, closed PRs and title or body edits (`edited` runs only when the base branch changes);
 - runs on a `/cura` comment from an `OWNER`, `MEMBER` or `COLLABORATOR`;
 - cancels an in-progress review of the same PR (concurrency group `cura-<pr>`);
 - refuses PRs from forks;
 - checks out the PR head and runs the action.
+
+A closed PR or a submitted PR review runs a re-score job instead (see [below](#re-scoring-without-a-review)).
 
 Because a called workflow's token can't have more permissions than its caller grants, the calling job must grant the three permissions shown. `contents: write` is needed only to resolve review threads, which GitHub gates on repository write access.
 
@@ -100,6 +104,14 @@ Comment `/cura` on the PR to review it again. You must be an owner, member or co
 | `claude_code_oauth_token` | yes | Claude Code subscription token |
 
 Outputs: `score`, `findings`, `summary_url` (see [action outputs](#action-outputs)).
+
+### Re-scoring without a review
+
+GitHub Actions has no event for resolving or reopening a review thread, so the summary cannot update the moment a human resolves a Cura thread. Instead, a short re-score job runs when a PR review is submitted and when the PR is closed or merged, so a merged PR's summary ends with the right score. The next review also re-scores, as always.
+
+The re-score job starts no Claude session and checks nothing out. It recomputes the score from the open Cura threads and edits only the summary's score line and finding links. Everything else stays as the last review wrote it, including the reviewed SHA, so the next push is still reviewed incrementally. Nothing is edited when the score and links are unchanged, when the PR has no summary yet, or when the last review failed.
+
+The job runs for same-repository PRs only. It has its own concurrency group (`cura-rescore-<pr>`), so it never cancels a review. If a review is running, the review rewrites the summary when it finishes. The job needs only `pull-requests: write`.
 
 ## Using the composite action directly
 
@@ -138,11 +150,13 @@ steps:
 
 `issue_comment` events carry no PR head, so resolve it through the API as shown. The trigger guard, fork refusal before checkout, concurrency and the 👀 reaction are the caller's job. The example's alternative job includes all four.
 
+To re-score on a submitted review and on close, add a second job that runs the action with `mode: rescore`. It needs no checkout, no Claude token and only `pull-requests: write`. Give it its own concurrency group without `cancel-in-progress`. The example's alternative includes this job too.
+
 ### Action inputs
 
 | Input | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `claude_code_oauth_token` | yes | — | Claude Code subscription token |
+| `claude_code_oauth_token` | yes | — | Claude Code subscription token (not used with `mode: rescore`) |
 | `github_token` | no | `${{ github.token }}` | Token with `contents: write`, `pull-requests: write` and `issues: write` |
 | `rules` | no | `.opencodereview/rule.json` | OCR rule file, read from the PR's base branch (skipped when absent there) |
 | `config` | no | `.github/cura.json` | Cura config file, read from the PR's base branch |
@@ -155,6 +169,7 @@ steps:
 | `allow_forks` | no | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 | `bot_login` | no | `github-actions` | Author login whose marked threads Cura owns (set it when `github_token` is not the default token) |
 | `allowed_bots` | no | `''` | Comma-separated bot logins allowed to trigger the review (passed to claude-code-action's `allowed_bots`) |
+| `mode` | no | `review` | `review` runs the review; `rescore` only recomputes the existing summary's score and finding links from the open Cura threads (no model, no checkout, no outputs) |
 
 ### Action outputs
 

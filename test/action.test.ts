@@ -135,6 +135,31 @@ describe('action.yml', () => {
     }
   });
 
+  describe('rescore mode', () => {
+    test('re-scores with the CLI and no model, token or checkout', () => {
+      expect(action).toMatch(/^ {2}mode:\n(?: {4}.*\n)* {4}default: review$/m);
+      const rescore = step('rescore');
+      expect(rescore).toMatch(/^ {6}if: inputs\.mode == 'rescore'$/m);
+      expect(rescore).toContain('node "$GITHUB_ACTION_PATH/src/cli.ts" rescore');
+      expect(rescore).toContain('CURA_PR: ${{ inputs.pr || github.event.pull_request.number }}');
+      expect(rescore).toContain('CURA_BOT_LOGIN: ${{ inputs.bot_login }}');
+      expect(rescore).not.toContain('claude_code_oauth_token');
+    });
+
+    test('skips the review steps', () => {
+      for (const key of ['pr', 'Install OpenCodeReview', 'context']) expect(step(key), key).toMatch(/^ {6}if: inputs\.mode != 'rescore'$/m);
+      // A skipped context step has no outputs, so these must not run on `!= 'true'`.
+      for (const key of ['prompt', 'claude']) expect(step(key), key).toMatch(/^ {6}if: steps\.context\.outputs\.skip_agent == 'false'$/m);
+      expect(step('publish')).toContain("steps.context.outcome == 'success'");
+    });
+
+    test('a mode other than review or rescore fails the run', () => {
+      const pr = step('pr');
+      expect(pr).toContain('MODE: ${{ inputs.mode }}');
+      expect(pr).toContain('if [[ "$MODE" != review ]]; then');
+    });
+  });
+
   test('pins third-party actions by commit SHA', () => {
     const uses = [...action.matchAll(/uses: (\S+)/g)].map((m) => m[1]!);
     expect(uses).toHaveLength(2);

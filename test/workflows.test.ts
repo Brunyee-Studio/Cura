@@ -44,6 +44,14 @@ function inputDefaults(text: string, header: string, indent: number): Map<string
 
 const reviewInputs = inputDefaults(review, '    inputs:', 6);
 
+/** A job's lines under `jobs:`, from its `  name:` key to the next job or the end. */
+function job(lines: string[], name: string): string {
+  const start = lines.indexOf(`  ${name}:`);
+  expect(start, `job ${name}`).toBeGreaterThanOrEqual(0);
+  const end = lines.findIndex((line, i) => i > start && /^ {0,2}\S/.test(line));
+  return lines.slice(start, end === -1 ? undefined : end).join('\n');
+}
+
 describe('workflows', () => {
   test.each(WORKFLOWS)('%s: run scripts take no ${{ }} expressions', (path) => {
     const lines = read(path).split('\n');
@@ -93,6 +101,62 @@ describe('workflows', () => {
       [...example.matchAll(/^ {4}# {3}([a-z_]+): (.*)$/gm)].map((m) => [m[1]!, m[2]!.replace(/^'(.*)'$/, '$1')]),
     );
     expect(listed).toEqual(reviewInputs);
+  });
+});
+
+// https://docs.github.com/actions/reference/events-that-trigger-workflows: a webhook-only event
+// (e.g. pull_request_review_thread) makes the whole workflow file invalid.
+const ACTIONS_EVENTS = new Set([
+  'branch_protection_rule', 'check_run', 'check_suite', 'create', 'delete', 'deployment', 'deployment_status', 'discussion',
+  'discussion_comment', 'fork', 'gollum', 'issue_comment', 'issues', 'label', 'merge_group', 'milestone', 'page_build', 'public',
+  'pull_request', 'pull_request_review', 'pull_request_review_comment', 'pull_request_target', 'push', 'registry_package',
+  'release', 'repository_dispatch', 'schedule', 'status', 'watch', 'workflow_call', 'workflow_dispatch', 'workflow_run',
+]);
+
+describe('triggers', () => {
+  test.each(WORKFLOWS)('%s: every `on:` event is a GitHub Actions event', (path) => {
+    const lines = read(path).split('\n');
+    const start = lines.indexOf('on:');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = lines.findIndex((line, i) => i > start && /^\S/.test(line));
+    const events = lines.slice(start + 1, end).flatMap((line) => /^ {2}([a-z_]+):/.exec(line)?.[1] ?? []);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect(ACTIONS_EVENTS, event).toContain(event);
+  });
+});
+
+describe('rescore', () => {
+  test.each(['examples/cura.yml', '.github/workflows/cura.yml'])('%s: triggers on PR close and on a submitted review', (path) => {
+    expect(read(path)).toMatch(/^ {2}pull_request:\n(?: {4}#.*\n)* {4}types: \[opened, reopened, ready_for_review, synchronize, edited, closed\]$/m);
+    expect(read(path)).toMatch(/^ {2}pull_request_review:\n {4}types: \[submitted\]$/m);
+  });
+
+  const reviewJobs: [string, string][] = [
+    ['review.yml', job(review.split('\n'), 'review')],
+    ['cura.yml', job(read('.github/workflows/cura.yml').split('\n'), 'review')],
+    ["the example's composite alternative", job(exampleAlternative, 'review')],
+  ];
+  const rescoreJobs: [string, string][] = [
+    ['review.yml', job(review.split('\n'), 'rescore')],
+    ['cura.yml', job(read('.github/workflows/cura.yml').split('\n'), 'rescore')],
+    ["the example's composite alternative", job(exampleAlternative, 'rescore')],
+  ];
+
+  test.each(reviewJobs)('%s: the review skips closed PRs and review events', (_name, text) => {
+    expect(text).toContain("&& github.event.action != 'closed'");
+    expect(text).not.toContain('pull_request_review');
+  });
+
+  test.each(rescoreJobs)('%s: re-scores same-repository PRs on close or a review, without a model, in its own group', (_name, text) => {
+    expect(text).toContain("(github.event_name == 'pull_request' && github.event.action == 'closed')");
+    expect(text).toContain("|| github.event_name == 'pull_request_review'");
+    expect(text).toContain('&& github.event.pull_request.head.repo.full_name == github.repository');
+    expect(text).toContain('group: cura-rescore-${{ github.event.pull_request.number }}');
+    expect(text).not.toContain('cancel-in-progress');
+    expect(text).toMatch(/^ {6}pull-requests: write$/m);
+    expect(text).not.toMatch(/^ {6}(issues|contents): write$/m);
+    expect(text).toMatch(/^ {10}mode: rescore$/m);
+    expect(text).not.toContain('claude_code_oauth_token');
   });
 });
 
