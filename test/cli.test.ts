@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { main, shellQuote, type Deps } from '../src/cli.ts';
 import { GitHubError, type GitHub } from '../src/github.ts';
 import { assetName } from '../src/install.ts';
+import { renderSummary } from '../src/render.ts';
 import type { Finding, Review } from '../src/types.ts';
 import { makeIo } from './io.ts';
 
@@ -131,7 +132,7 @@ describe('--help', () => {
   test('lists every subcommand and exits 0', async () => {
     const { io, text, code } = makeIo();
     await main(['--help'], {}, io);
-    for (const cmd of ['install', 'context', 'prompt', 'check', 'publish']) expect(text()).toContain(cmd);
+    for (const cmd of ['install', 'context', 'prompt', 'check', 'publish', 'rescore']) expect(text()).toContain(cmd);
     expect(code()).toBe(0);
   });
 
@@ -545,6 +546,44 @@ describe('publish', () => {
     await main(['publish'], env({ REVIEW: '', AGENT_OUTCOME: 'skipped' }), io, { createGitHub: () => gh });
     expect(code()).toBe(1);
     expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
+  });
+});
+
+describe('rescore', () => {
+  const env = { GITHUB_TOKEN: 't', GITHUB_REPOSITORY: 'o/r', CURA_PR: '7' };
+  const link = { severity: 'P1' as const, category: 'correctness' as const, title: 'Off by one', path: 'src/a.ts', line: 5, url: 'https://x/1' };
+  const summary = renderSummary({
+    review: review(),
+    score: 3,
+    open: [link],
+    resolved: [],
+    dismissed: [],
+    unresolved: [],
+    unanchored: 0,
+    headSha: HEAD,
+    base: 'main',
+    mode: 'full',
+    runUrl: 'https://github.com/o/r/actions/runs/1',
+    version: '1.0.0',
+    rerun: '/cura',
+  });
+
+  test('edits the summary when its last open thread was resolved, without a ctx dir', async () => {
+    const { gh, calls } = fakeGitHub({ comments: [{ id: 42, body: summary, user: { login: 'github-actions[bot]' } }] });
+    const { io, text, code } = makeIo();
+    await main(['rescore'], env, io, { createGitHub: () => gh });
+    expect(code()).toBe(0);
+    expect(sentBody(calls, 'PATCH', '/repos/o/r/issues/comments/42')).toContain('**Confidence 5/5** — No open findings');
+    expect(text()).toContain('5/5');
+  });
+
+  test('does nothing without a summary', async () => {
+    const { gh, calls } = fakeGitHub();
+    const { io, text, code } = makeIo();
+    await main(['rescore'], env, io, { createGitHub: () => gh });
+    expect(code()).toBe(0);
+    expect(calls.filter((c) => c.method === 'PATCH')).toEqual([]);
+    expect(text()).toContain('No Cura summary');
   });
 });
 

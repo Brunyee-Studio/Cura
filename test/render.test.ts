@@ -5,6 +5,7 @@ import {
   renderFailure,
   renderFindingComment,
   renderSummary,
+  rescoreSummary,
 } from '../src/render.ts';
 import { fingerprint, score } from '../src/score.ts';
 import type { Category, Finding, FindingMeta, Review, Severity } from '../src/types.ts';
@@ -280,5 +281,63 @@ describe('renderFailure', () => {
     expect(out.startsWith('<!-- cura:summary -->\n## Cura review\n')).toBe(true);
     expect(out).toContain(`Review failed for \`${SHA.slice(0, 7)}\` — [run](https://run/2)`);
     expect(out).not.toContain('Confidence');
+  });
+});
+
+describe('rescoreSummary', () => {
+  const p0: Open = { severity: 'P0', category: 'security', title: 'Leaks token', path: 'src/a.ts', line: 3, url: 'https://x/0' };
+  const p1: Open = { severity: 'P1', category: 'correctness', title: 'T1', path: 'src/a.ts', line: 5, url: 'https://x/1' };
+  const p2: Open = { severity: 'P2', category: 'docs', title: 'T2', path: 'src/b.ts', line: null, url: 'https://x/2' };
+  const sets: [string, Open[]][] = [
+    ['none', []],
+    ['P2', [p2]],
+    ['P1+P2', [p1, p2]],
+    ['P0+P1+P2', [p0, p1, p2]],
+  ];
+  const layouts: [string, Partial<Parameters<typeof renderSummary>[0]>][] = [
+    ['bare', { review: review({ risk_note: '', scopes: [], files: [] }) }],
+    [
+      'every section',
+      {
+        review: review({ diagram: 'sequenceDiagram\nA->>B: hi', discarded: [{ location: 'src/a.ts:1', candidate: 'maybe', reason: 'speculative' }] }),
+        resolved: [{ url: 'https://x/r', path: 'src/c.ts', note: 'fixed' }],
+        dismissed: [{ url: 'https://x/d', reason: 'intended' }],
+        unresolved: [{ url: p1.url }, { url: p2.url }],
+        unanchored: 1,
+      },
+    ],
+    ['one unresolved thread', { unresolved: [{ url: p0.url }] }],
+    ['only unanchored after', { unanchored: 2 }],
+  ];
+
+  describe.each(layouts)('%s', (_layout, over) => {
+    for (const [from, before] of sets) {
+      test.each(sets)(`from ${from} to %s matches a fresh render`, (_to, after) => {
+        const body = renderSummary(summaryInput(before, over));
+        // Unresolved threads a human has since resolved leave the warning; none are ever added.
+        const unresolved = (over.unresolved ?? []).filter((u) => after.some((o) => o.url === u.url));
+        expect(rescoreSummary(body, score(after), after)).toBe(renderSummary(summaryInput(after, { ...over, unresolved })));
+      });
+    }
+  });
+
+  test('the unresolved warning keeps only threads still open, and never gains one', () => {
+    const body = renderSummary(summaryInput([p1, p2], { unresolved: [{ url: p1.url }, { url: p2.url }] }));
+    const one = rescoreSummary(body, score([p1, p0]), [p1, p0])!;
+    expect(one).toContain(`> ⚠️ 1 thread Cura closed could not be resolved on GitHub and still counts toward the score: [thread](${p1.url}).`);
+    expect(one.match(/^> ⚠️ .*$/m)![0]).not.toContain(p0.url);
+    const none = rescoreSummary(body, score([p0]), [p0])!;
+    expect(none).not.toContain('could not be resolved on GitHub');
+    expect(none).toBe(renderSummary(summaryInput([p0])));
+  });
+
+  test('a failed review is left alone', () => {
+    const previous = renderSummary(summaryInput([p1]));
+    expect(rescoreSummary(renderFailure({ previousBody: previous, runUrl: 'https://run/2', headSha: SHA }), 5, [])).toBeNull();
+    expect(rescoreSummary(renderFailure({ previousBody: null, runUrl: 'https://run/2', headSha: SHA }), 5, [])).toBeNull();
+  });
+
+  test('a body without a score line is left alone', () => {
+    expect(rescoreSummary('<!-- cura:summary -->\n## Cura review\n', 5, [])).toBeNull();
   });
 });

@@ -251,10 +251,7 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
 
   writeJson('threads.json', await fetchThreads(gh, repo, pr, opts.botLogin));
 
-  const comments = await gh.paginate<IssueComment>(`/repos/${repo.owner}/${repo.name}/issues/${pr}/comments`);
-  const summary = comments.findLast(
-    (c) => c.user !== null && isBot(c.user.login, opts.botLogin) && c.body.includes(SUMMARY_MARKER),
-  );
+  const summary = await findSummaryComment(gh, repo, pr, opts.botLogin);
   writeJson('summary-comment.json', summary ? { id: summary.id, body: summary.body } : {});
 
   // The last marker is Cura's own; model-authored text above it is neutralised but never trusted.
@@ -277,6 +274,12 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
     deletedCount: facts.length - reviewableCount,
     reviewLines: reviewLines(facts, incrementalDiff),
   };
+}
+
+/** Cura's summary comment on the PR: the last bot comment carrying the summary marker. */
+export async function findSummaryComment(gh: GitHub, repo: { owner: string; name: string }, pr: number, botLogin: string): Promise<IssueComment | undefined> {
+  const comments = await gh.paginate<IssueComment>(`/repos/${repo.owner}/${repo.name}/issues/${pr}/comments`);
+  return comments.findLast((c) => c.user !== null && isBot(c.user.login, botLogin) && c.body.includes(SUMMARY_MARKER));
 }
 
 /** Added + removed lines over the reviewable files: in the increment when there is one (git's diff, so filtered to them), else the PR. */

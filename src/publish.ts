@@ -281,20 +281,18 @@ function withoutShaPrefix(note: string): string {
 function collectOpen(threads: Thread[], closedIds: Set<string>, posted: Posted[], findings: Finding[]): OpenFindingLink[] {
   const byFingerprint = new Map(findings.map((f) => [fingerprint(f), f]));
   const openThreads = threads.filter((t) => !t.isResolved && !closedIds.has(t.id));
-  const open = openThreads.map((t): OpenFindingLink => ({
-    severity: t.meta.severity,
-    category: t.meta.category,
-    title: byFingerprint.get(t.meta.fingerprint)?.title ?? titleFromBody(t.body),
-    path: t.path,
-    line: t.line,
-    url: t.url,
-  }));
+  const open = openThreads.map((t) => threadLink(t, byFingerprint.get(t.meta.fingerprint)?.title));
   const seen = new Set(openThreads.map((t) => t.meta.fingerprint));
   for (const { finding, url } of posted) {
     if (seen.has(fingerprint(finding))) continue;
     open.push({ severity: finding.severity, category: finding.category, title: finding.title, path: finding.path, line: finding.line, url });
   }
   return open;
+}
+
+/** A thread's summary link; its severity and category come from the thread's own finding marker. */
+export function threadLink(t: Thread, title = titleFromBody(t.body)): OpenFindingLink {
+  return { severity: t.meta.severity, category: t.meta.category, title, path: t.path, line: t.line, url: t.url };
 }
 
 function titleFromBody(body: string): string {
