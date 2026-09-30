@@ -47,6 +47,7 @@ const summaryInput = (open: Open[], over: Partial<Parameters<typeof renderSummar
   open,
   resolved: [],
   dismissed: [],
+  unresolved: [],
   unanchored: 0,
   headSha: SHA,
   base: 'staging',
@@ -215,6 +216,20 @@ describe('renderSummary', () => {
     expect(out).not.toContain('### Dismissed');
     expect(out).not.toContain('Discarded');
     expect(out).not.toContain('⚠️');
+  });
+
+  test('a refused resolve is explained under the score line, which still counts the thread', () => {
+    const open: Open[] = [{ severity: 'P2', category: 'docs', title: 'T', path: 'src/a.ts', line: 3, url: 'https://x/u' }];
+    const out = renderSummary(summaryInput(open, { review: review({ risk_note: '' }), unresolved: [{ url: 'https://x/u' }] }));
+    expect(out).toContain(
+      '**Confidence 4/5** — 1 P2\n\n> ⚠️ 1 thread Cura closed could not be resolved on GitHub and still counts toward the score: [thread](https://x/u).',
+    );
+    expect(out).not.toContain('No open findings');
+  });
+
+  test('several refused resolves are counted and linked', () => {
+    const out = renderSummary(summaryInput([], { unresolved: [{ url: 'https://x/1' }, { url: 'https://x/2' }] }));
+    expect(out).toContain('> ⚠️ 2 threads Cura closed could not be resolved on GitHub and still count toward the score: [thread](https://x/1), [thread](https://x/2).');
   });
 
   describe('invariant: open findings lower the score and appear only as links', () => {

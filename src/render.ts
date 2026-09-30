@@ -29,6 +29,8 @@ export interface SummaryInput {
   open: OpenFindingLink[];
   resolved: { url: string; path: string; note: string }[];
   dismissed: { url: string; reason: string }[];
+  /** Threads the review closed but GitHub refused to resolve: open and scored, which the review did not expect. */
+  unresolved: { url: string }[];
   unanchored: number;
   headSha: string;
   base: string;
@@ -84,6 +86,7 @@ export function renderFindingComment(f: Finding, opts: { anchor: Anchor; citeLin
 export function renderSummary(input: SummaryInput): string {
   const { review, open } = input;
   const sections: string[] = ['## Cura review', scoreLine(input.score, open, review.risk_note)];
+  if (input.unresolved.length > 0) sections.push(unresolvedLine(input.unresolved));
 
   if (review.summary.trim()) sections.push(review.summary.trim());
 
@@ -144,6 +147,12 @@ function scoreLine(score: number, open: OpenFindingLink[], riskNote: string): st
   if (parts.length === 0) parts.push('No open findings');
   if (riskNote.trim()) parts.push(oneLine(riskNote));
   return `**Confidence ${score}/5** — ${parts.join(' · ')}`;
+}
+
+function unresolvedLine(threads: { url: string }[]): string {
+  const [noun, verb] = threads.length === 1 ? ['thread', 'counts'] : ['threads', 'count'];
+  const links = threads.map((t) => `[thread](${t.url})`).join(', ');
+  return `> ⚠️ ${threads.length} ${noun} Cura closed could not be resolved on GitHub and still ${verb} toward the score: ${links}.`;
 }
 
 function footer(input: SummaryInput): string {

@@ -77,6 +77,7 @@ const SEVERITY_RANK: Record<Severity, number> = { P0: 0, P1: 1, P2: 2 };
 const TITLE_RE = /^\*\*\[[^\]]*\]\s*([\s\S]*?)\*\*/;
 const CITE_RE = /^`[^`\n]*:(\d+)` — /;
 const SUGGESTION_RE = /\n\n(`{3,})suggestion\n[\s\S]*\n\1$/;
+const SHA_PREFIX_RE = /^(?:fixed|resolved) in `?[0-9a-f]{7,40}`?[.:]\s+/i;
 
 /** Validates the lead's review and deterministically writes comments, thread lifecycle and the summary to the PR. */
 export async function publish(opts: PublishOptions): Promise<PublishResult> {
@@ -106,6 +107,7 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
     open,
     resolved: closed.resolved,
     dismissed: closed.dismissed,
+    unresolved: closed.unresolved,
     unanchored: unanchored.length,
     headSha,
     base: opts.base,
@@ -243,7 +245,10 @@ async function closeThreads(ctx: Ctx, review: Review, threads: Map<string, Threa
   const unresolved: UnresolvedThread[] = [];
   const seen = new Set<string>();
   const closing = [
-    ...review.resolved.map((r) => ({ id: r.thread_id, reply: `Resolved in \`${ctx.headSha.slice(0, 7)}\`: ${r.note}`, record: (t: Thread) => resolved.push({ url: t.url, path: t.path, note: r.note }) })),
+    ...review.resolved.map((r) => {
+      const note = withoutShaPrefix(r.note);
+      return { id: r.thread_id, reply: `Resolved in \`${ctx.headSha.slice(0, 7)}\`: ${note}`, record: (t: Thread) => resolved.push({ url: t.url, path: t.path, note }) };
+    }),
     ...review.dismissed.map((d) => ({ id: d.thread_id, reply: `Dismissed: ${d.reason}`, record: (t: Thread) => dismissed.push({ url: t.url, reason: d.reason }) })),
   ];
   for (const { id, reply, record } of closing) {
@@ -262,6 +267,11 @@ async function closeThreads(ctx: Ctx, review: Review, threads: Map<string, Threa
     record(thread);
   }
   return { ids, resolved, dismissed, unresolved };
+}
+
+/** The reply already names the head commit, so a note that opens by naming one would say it twice. */
+function withoutShaPrefix(note: string): string {
+  return note.replace(SHA_PREFIX_RE, '') || note;
 }
 
 /**

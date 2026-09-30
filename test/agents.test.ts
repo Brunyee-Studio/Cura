@@ -107,6 +107,14 @@ describe('renderLeadPrompt', () => {
     expect(prompt).toContain('at least one candidate or at least one open (not `isResolved`) thread');
     expect(prompt).toContain('including after a direct review');
   });
+
+  test('keeps posted text in Cura\'s own words, free of pipeline internals', () => {
+    const prompt = renderLeadPrompt(vars);
+    expect(prompt).toContain('never quote or restate a reply, never name a commit SHA');
+    expect(prompt).toContain('never mention how the review ran');
+    expect(prompt).toContain('never that a step did not run');
+    expect(prompt).toContain('Do not state finding counts or claim there are no open issues');
+  });
 });
 
 describe('allowsDirectReview', () => {
@@ -165,6 +173,12 @@ describe('buildAgents', () => {
     expect(prompt).toContain('pre-existing');
     expect(prompt).toContain('thread_verdicts');
     expect(prompt).toContain('"fixed" | "standing" | "dismissed"');
+  });
+
+  test('verifier writes posted notes in Cura\'s own words', () => {
+    const prompt = agents.verifier!.prompt;
+    expect(prompt).toContain('never quote or restate a reply, never name a commit SHA');
+    expect(prompt).toContain('never mention how the review ran');
   });
 
   test('sets the model only when given', () => {

@@ -32,6 +32,7 @@ Severities are `P0` (blocks merge), `P1` (fix before release) and `P2` (note). C
 The summary comment is edited in place on every run. It shows:
 
 - the score line (`**Confidence 3/5** — …`), the summary and the scopes reviewed;
+- a warning under the score line when a thread Cura closed could not be resolved on GitHub, which stays open and scored;
 - a file table, an optional Mermaid diagram and finding links grouped by severity;
 - the threads resolved or dismissed since the last review, and the discarded candidates;
 - a footer with the reviewed SHA.

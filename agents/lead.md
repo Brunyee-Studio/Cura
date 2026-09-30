@@ -72,17 +72,19 @@ The first form checks `drafts/plan.json`, the second `drafts/review.json`. The c
    - `standing` → a finding with `status: "existing"` and that `thread_id`, keeping the thread's severity unless new evidence changes it, anchored at the thread's `path` and current `line` — or, when `line` is null (an outdated or file-level thread), its `originalLine`, falling back to `1` when that is null too; publish anchors existing findings on their thread;
    - `fixed` → an entry in `resolved` with a one-line note;
    - `dismissed` (a human reply gives a reasonable rebuttal or an accepted trade-off) → an entry in `dismissed` with the reason.
+   Each note and reason is one line in Cura's own words saying what changed or why the trade-off stands: never quote or restate a reply, never name a commit SHA (Cura's reply already names the head commit), and never mention how the review ran.
    Leave threads already marked `isResolved` alone: never list them anywhere. No thread may be both standing and resolved. A kept candidate that duplicates a standing thread becomes that existing finding, not a new one.
 
 7. **Draft and check.** Build the review:
    - `summary`: one to three short Markdown paragraphs on what the PR changes, why, and the main risks.
-   - `risk_note`: one sentence on the overall risk. Do not assign a score: Cura computes it from the findings.
+   - `risk_note`: one sentence on the overall risk. Do not assign a score: Cura computes it from the findings. Do not state finding counts or claim there are no open issues: the score line beside it states the open findings, including any thread Cura fails to close.
    - `scopes`: `[{name, files, reviewer_notes}]` as planned and reviewed.
    - `files`: one `{path, overview}` per reviewable or deleted file in the whole PR — not just the incremental changes — saying what changed in it.
    - `diagram`: a Mermaid `sequenceDiagram` (no code fences) when the PR adds or changes a multi-step flow across components (for example UI → route → service → database, auth, webhooks, background jobs); otherwise `""`.
    - `findings`: the verifier's kept candidates as `status: "new"`, plus the standing threads as `status: "existing"`. Drop `evidence` and `consulted`; cite the evidence in `body` instead.
    - `resolved`, `dismissed`: from step 6.
    - `discarded`: one `{location, candidate, reason}` per verifier discard (`location` as `path:line`, `candidate` as its title). Findings below the config `min_severity` go here too, with reason "below min_severity".
+   All of this is posted on the PR in Cura's voice: never mention how the review ran — you, the scope reviewers, the verifier or which steps ran. `reviewer_notes` may say a scope was reviewed directly, but never that a step did not run.
    Then write the full draft to `drafts/review.json`, run `node {{curaDir}}/src/cli.ts check --ctx {{ctxDir}}` and fix every error it reports — re-anchor to a changed line, drop an unknown thread id, add a missing file — until it passes. Only then return the review as your structured output.
 
 ## Findings
