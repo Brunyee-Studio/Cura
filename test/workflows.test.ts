@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { runBlocks } from './yaml-lines.ts';
@@ -134,11 +136,85 @@ describe('review.yml', () => {
 
 describe('release.yml', () => {
   const release = read('.github/workflows/release.yml');
+  const releaserc = JSON.parse(read('.releaserc.json'));
 
-  test('validates the version in bash and moves the major tag', () => {
-    expect(release).toContain('VERSION: ${{ inputs.version }}');
-    expect(release).toContain('[[ ! "$VERSION" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]');
-    expect(release).toContain('git push --force origin "refs/tags/$MAJOR"');
-    expect(release).toContain('gh release create "$VERSION" --verify-tag --generate-notes');
+  test('releases every push to main with semantic-release and commits nothing back', () => {
+    expect(release).toMatch(/^on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:\n/m);
+    expect(release).toContain('if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then');
+    expect(release).toContain('run: pnpm exec semantic-release');
+    expect(releaserc.branches).toEqual(['main']);
+    expect(releaserc.tagFormat).toBe('v${version}');
+    const plugins = releaserc.plugins.map((p: string | [string]) => (Array.isArray(p) ? p[0] : p));
+    expect(plugins).toEqual([
+      '@semantic-release/commit-analyzer',
+      '@semantic-release/release-notes-generator',
+      '@semantic-release/github',
+    ]);
+  });
+
+  describe('the tag move', () => {
+    const lines = release.split('\n');
+    const script = runBlocks(lines.slice(lines.indexOf('      - name: Move major and latest tags')))[0]!
+      .map((l) => l.slice(10))
+      .join('\n');
+
+    function withRepo(fn: (git: (...args: string[]) => string, move: () => string) => void) {
+      const dir = mkdtempSync(join(tmpdir(), 'cura-release-'));
+      const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+      const git = (...args: string[]) =>
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: join(dir, 'repo'), env, encoding: 'utf8' }).trim();
+      try {
+        execFileSync('git', ['init', '-q', '--bare', 'origin.git'], { cwd: dir, env });
+        execFileSync('git', ['init', '-q', 'repo'], { cwd: dir, env });
+        git('remote', 'add', 'origin', join(dir, 'origin.git'));
+        fn(git, () => execFileSync('bash', ['-c', script], { cwd: join(dir, 'repo'), env, encoding: 'utf8' }).trim().split('\n').at(-1)!);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    const remoteTarget = (git: (...args: string[]) => string, tag: string) =>
+      git('ls-remote', 'origin', `refs/tags/${tag}^{}`).split('\t')[0];
+
+    test('moves the major tag and latest to a new release and pushes them', () => {
+      withRepo((git, move) => {
+        git('commit', '-q', '--allow-empty', '-m', 'feat: a');
+        git('tag', 'v1.0.0');
+        git('commit', '-q', '--allow-empty', '-m', 'fix: b');
+        git('tag', 'v1.0.1');
+        expect(move()).toBe('Moved v1 and latest to v1.0.1.');
+        const head = git('rev-parse', 'HEAD');
+        expect(remoteTarget(git, 'v1')).toBe(head);
+        expect(remoteTarget(git, 'latest')).toBe(head);
+        expect(move()).toBe('v1 and latest already point at v1.0.1.');
+      });
+    });
+
+    test('never moves the tags backwards when an older commit is checked out', () => {
+      withRepo((git, move) => {
+        git('commit', '-q', '--allow-empty', '-m', 'feat: a');
+        git('tag', 'v1.0.9');
+        git('commit', '-q', '--allow-empty', '-m', 'fix: b');
+        git('tag', 'v1.0.10');
+        const newest = git('rev-parse', 'HEAD');
+        git('checkout', '-q', 'v1.0.9');
+        expect(move()).toBe('Moved v1 and latest to v1.0.10.');
+        expect(remoteTarget(git, 'v1')).toBe(newest);
+      });
+    });
+
+    test('a major release creates the new major tag and leaves the old one', () => {
+      withRepo((git, move) => {
+        git('commit', '-q', '--allow-empty', '-m', 'feat: a');
+        git('tag', 'v1.2.0');
+        move();
+        const v1 = git('rev-parse', 'HEAD');
+        git('commit', '-q', '--allow-empty', '-m', 'feat!: b');
+        git('tag', 'v2.0.0');
+        expect(move()).toBe('Moved v2 and latest to v2.0.0.');
+        expect(remoteTarget(git, 'v1')).toBe(v1);
+        expect(remoteTarget(git, 'v2')).toBe(git('rev-parse', 'HEAD'));
+        expect(remoteTarget(git, 'latest')).toBe(git('rev-parse', 'HEAD'));
+      });
+    });
   });
 });
