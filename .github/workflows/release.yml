@@ -1,12 +1,14 @@
 name: Release
 
+# Every push to main is released by semantic-release from its conventional
+# commits: `fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE` → major, and
+# anything else releases nothing. It pushes the `vX.Y.Z` tag and the GitHub
+# release; this workflow then moves the `vX` major tag and `latest` onto it.
+# Dispatch it by hand to retry a release that failed after its checks.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      version:
-        description: Release tag, `vX.Y.Z`. The `vX` major tag is moved to it.
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -19,23 +21,14 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate version
-        id: version
-        env:
-          VERSION: ${{ inputs.version }}
+      - name: Check branch
         run: |
-          set -euo pipefail
-          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::version must look like v1.2.3 (got '$VERSION')."
-            exit 1
-          fi
           # Moving the major tag re-points every consumer on it, so only the
           # default branch is released.
           if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
             echo "::error::Release from main (dispatched on $GITHUB_REF)."
             exit 1
           fi
-          echo "major=${VERSION%%.*}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,25 +45,27 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
 
-      - name: Tag
+      - name: Semantic release
         env:
-          VERSION: ${{ inputs.version }}
-          MAJOR: ${{ steps.version.outputs.major }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm exec semantic-release
+
+      - name: Move major and latest tags
         run: |
           set -euo pipefail
-          if git rev-parse --quiet --verify "refs/tags/$VERSION" >/dev/null; then
-            echo "::error::Tag $VERSION already exists."
-            exit 1
+          # Point them at the highest release, not at a tag on HEAD, so a
+          # re-run of an older push can never move them backwards.
+          VERSION=$(git tag --list 'v*.*.*' | sort -V | tail -n1)
+          MAJOR=${VERSION%%.*}
+          TARGET=$(git rev-parse "$VERSION^{}")
+          if [[ "$(git rev-parse -q --verify "$MAJOR^{}")" == "$TARGET" \
+             && "$(git rev-parse -q --verify "latest^{}")" == "$TARGET" ]]; then
+            echo "$MAJOR and latest already point at $VERSION."
+            exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$VERSION" -m "$VERSION"
-          git tag -fa "$MAJOR" -m "$MAJOR → $VERSION"
-          git push origin "refs/tags/$VERSION"
-          git push --force origin "refs/tags/$MAJOR"
-
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ inputs.version }}
-        run: gh release create "$VERSION" --verify-tag --generate-notes --title "$VERSION"
+          git tag -fa "$MAJOR" -m "$MAJOR → $VERSION" "$VERSION^{}"
+          git tag -fa latest -m "latest → $VERSION" "$VERSION^{}"
+          git push --force origin "refs/tags/$MAJOR" refs/tags/latest
+          echo "Moved $MAJOR and latest to $VERSION."

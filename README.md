@@ -224,25 +224,29 @@ Cura runs [OpenCodeReview](https://github.com/alibaba/open-code-review) in deleg
 TypeScript runs directly on Node 24 through type stripping. There is no build step and there are no runtime dependencies.
 
 ```sh
-pnpm install
+pnpm install         # also installs the lefthook git hooks
 pnpm typecheck       # tsc --noEmit
 pnpm lint            # oxlint
 pnpm test            # vitest run
+pnpm commit          # commitizen prompt for a conventional commit message
 node src/cli.ts --help
 ```
 
 `src/cli.ts` implements the action's steps (`install`, `context`, `prompt`, `check`, `publish`).
 
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org). A lefthook `commit-msg` hook checks them with commitlint, and a `pre-commit` hook runs the linter.
+
 ### Releasing
 
-Run the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)) from `main` with a `version` such as `v1.2.3`. It:
+Releases are automatic. Every push to `main` runs the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)), which:
 
 1. runs typecheck, lint and tests;
-2. creates the annotated tag;
-3. force-moves the major tag (`v1`) to it;
-4. publishes a GitHub release with generated notes.
+2. runs [semantic-release](https://semantic-release.gitbook.io), which reads the commits since the last `vX.Y.Z` tag, then tags the next version and publishes a GitHub release with generated notes. `fix` gives a patch, `feat` a minor, and `!` or a `BREAKING CHANGE:` footer a major. Other types release nothing;
+3. force-moves the major tag (`v1`) and `latest` to the highest release.
 
-Consumers pin `@v1` or a commit SHA.
+Nothing is committed back to `main`. To retry a failed release, run the workflow by hand from `main`.
+
+Consumers pin `@v1` or a commit SHA. A breaking change creates `v2` and leaves `v1` on the last `1.x` release.
 
 ## License
 
