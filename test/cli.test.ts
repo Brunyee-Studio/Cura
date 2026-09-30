@@ -252,6 +252,20 @@ describe('check', () => {
     });
   });
 
+  test("plan fallback repairs the lead's last draft", async () => {
+    seedCtx();
+    const bad = JSON.stringify({ scopes: [{ name: 'parser', files: ['src/a.ts', 'nope.ts'], focus: 'Parsing edge cases', context: ['src/lexer.ts'] }] });
+    for (const attempt of [1, 2]) {
+      const { io, text } = draftIo(bad, 'plan.json');
+      await main(['check', '--ctx', ctx, '--plan'], {}, io);
+      if (attempt === 1) continue;
+      const line = text().split('\n').find((l) => l.startsWith('FALLBACK PLAN (use this):'));
+      expect(JSON.parse(line!.slice('FALLBACK PLAN (use this):'.length))).toEqual({
+        scopes: [{ name: 'parser', files: ['src/a.ts'], focus: 'Parsing edge cases', context: ['src/lexer.ts'] }],
+      });
+    }
+  });
+
   test('plan caps come from context.json, not env', async () => {
     seedCtx({
       maxFiles: 1,

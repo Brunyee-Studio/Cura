@@ -57,6 +57,7 @@ const CHECK_USAGE = 'usage: node src/cli.ts check [--ctx <absolute dir>] [--plan
 // check rejects a heredoc carrying JSON, so the checker can't take them on stdin.
 const REVIEW_DRAFT = 'review.json';
 const PLAN_DRAFT = 'plan.json';
+// The fallback repairs the lead's last draft rather than replacing it, so falling back early costs little.
 const PLAN_FALLBACK_AFTER = 2;
 const FAIL_ON_RANK: Record<string, number> = { P0: 2, P1: 3 };
 const SEVERITIES = new Set<string>(['P0', 'P1', 'P2']);
@@ -284,7 +285,7 @@ function check(args: string[], env: Env, io: Io): void {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
     const errors = checkPlan(draft, { ...planCaps(ctxDir), facts });
     if (errors.length === 0) return ok(io);
-    return failPlan(ctxDir, io, formatErrors(errors));
+    return failPlan(ctxDir, io, formatErrors(errors), draft);
   }
 
   const errors = checkReview(draft, loadFacts(ctxDir));
@@ -302,14 +303,14 @@ function fail(io: Io, message: string): void {
   io.exit(1);
 }
 
-function failPlan(ctxDir: string, io: Io, message: string): void {
+function failPlan(ctxDir: string, io: Io, message: string, draft?: unknown): void {
   const attemptsFile = join(ctxDir, 'plan-attempts');
   const attempts = (existsSync(attemptsFile) ? Number(readFileSync(attemptsFile, 'utf8')) || 0 : 0) + 1;
   writeFileSync(attemptsFile, String(attempts));
   io.stdout(message);
   if (attempts >= PLAN_FALLBACK_AFTER) {
     const facts = readJson<FileFact[]>(ctxDir, 'facts.json');
-    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir)))}`);
+    io.stdout(`${FALLBACK_PREFIX} ${JSON.stringify(fallbackPlan(facts, planCaps(ctxDir), draft))}`);
   }
   io.exit(1);
 }
