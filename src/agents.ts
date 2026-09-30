@@ -13,6 +13,7 @@ export interface LeadPromptVars {
   curaDir: string;
   maxFiles: number;
   maxLines: number;
+  directReview: boolean;
 }
 
 export interface AgentDefinition {
@@ -20,6 +21,21 @@ export interface AgentDefinition {
   prompt: string;
   tools: string[];
   model?: string;
+}
+
+/**
+ * Changed lines (added + removed, reviewable files only) at or below which the lead may review the diff
+ * itself instead of dispatching scope reviewers: the increment in incremental mode, else the whole PR.
+ */
+export const DIRECT_REVIEW_MAX_LINES = 200;
+
+export function allowsDirectReview(reviewLines: number): boolean {
+  return reviewLines <= DIRECT_REVIEW_MAX_LINES;
+}
+
+/** The verifier must run whenever there is anything to triage, direct review or not. */
+export function needsVerifier(work: { candidates: number; openThreads: number }): boolean {
+  return work.candidates > 0 || work.openThreads > 0;
 }
 
 /** Subdirectory of the context dir the lead writes its drafts to for the checker. */
@@ -65,6 +81,7 @@ export function renderLeadPrompt(vars: LeadPromptVars): string {
     prevSha: vars.prevSha ?? 'none',
     maxFiles: String(vars.maxFiles),
     maxLines: String(vars.maxLines),
+    directReview: vars.directReview ? 'allowed' : 'not allowed',
   });
 }
 

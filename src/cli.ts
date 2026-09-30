@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { allowedTools, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
+import { allowedTools, allowsDirectReview, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
@@ -39,6 +39,7 @@ interface RunState {
   headSha: string;
   maxFiles: number;
   maxLines: number;
+  reviewLines: number;
 }
 
 const USAGE = `usage: node src/cli.ts <command>
@@ -196,6 +197,7 @@ function prompt(env: Env, io: Io): void {
     curaDir,
     maxFiles,
     maxLines,
+    directReview: allowsDirectReview(state.reviewLines),
   });
   const model = env.CURA_MODEL || undefined;
   const agentsFile = join(ctxDir, 'agents.json');
@@ -341,7 +343,7 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   } else if (agentSucceeded) {
     review = executionFile === null ? parseJson(raw) : structuredOutputFrom(executionFile);
   }
-  if (executionFile !== null) reportTrace(env, io, executionFile, state);
+  if (executionFile !== null) reportTrace(env, io, executionFile, state, review);
 
   const markFailed = () => {
     const previous = readJson<{ body?: string }>(ctxDir, 'summary-comment.json');
@@ -412,11 +414,15 @@ function structuredOutputFrom(file: string): unknown {
 }
 
 /** The lead's trace goes to the job summary only, never the PR; an unreadable execution file just has none. */
-function reportTrace(env: Env, io: Io, file: string, state: RunState): void {
+function reportTrace(env: Env, io: Io, file: string, state: RunState, review: unknown): void {
   const trace = readTrace(file);
   if (trace === null) return;
   stepSummary(env, io, renderTrace(trace));
-  for (const warning of traceWarnings(trace, { mode: state.mode, reviewable: state.reviewableCount > 0 })) io.stdout(`::warning::Cura: ${warning}`);
+  const ctxDir = ctxFromEnv(env);
+  const { findings, discarded } = (review ?? {}) as Partial<Review>;
+  const candidates = (Array.isArray(findings) ? findings.length : 0) + (Array.isArray(discarded) ? discarded.length : 0);
+  const openThreads = readJson<Thread[]>(ctxDir, 'threads.json').filter((t) => !t.isResolved).length;
+  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads })) io.stdout(`::warning::Cura: ${warning}`);
 }
 
 function parseJson(text: string): unknown {

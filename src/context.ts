@@ -28,6 +28,8 @@ export interface ContextResult {
   summaryId: number | null;
   reviewableCount: number;
   deletedCount: number;
+  /** Changed lines the lead has to review; decides whether it may review without scope reviewers. */
+  reviewLines: number;
 }
 
 interface PreviewFile {
@@ -258,12 +260,31 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   // The last marker is Cura's own; model-authored text above it is neutralised but never trusted.
   const prevSha = summary ? ([...summary.body.matchAll(REVIEWED_SHA)].at(-1)?.[1] ?? null) : null;
   let mode: ContextResult['mode'] = 'full';
+  let incrementalDiff: string | null = null;
   if (prevSha !== null && prevSha !== opts.headSha && isAncestor(opts, prevSha)) {
-    write('incremental.diff', exec('git', ['diff', ...DIFF_FLAGS, prevSha, 'HEAD']));
+    incrementalDiff = exec('git', ['diff', ...DIFF_FLAGS, prevSha, 'HEAD']);
+    write('incremental.diff', incrementalDiff);
     mode = 'incremental';
   }
 
   copyGuidance(opts.workspace, join(ctxDir, 'guidance'));
 
-  return { mode, prevSha, summaryId: summary?.id ?? null, reviewableCount, deletedCount: facts.length - reviewableCount };
+  return {
+    mode,
+    prevSha,
+    summaryId: summary?.id ?? null,
+    reviewableCount,
+    deletedCount: facts.length - reviewableCount,
+    reviewLines: reviewLines(facts, incrementalDiff),
+  };
+}
+
+/** Added + removed lines over the reviewable files: in the increment when there is one (git's diff, so filtered to them), else the PR. */
+function reviewLines(facts: FileFact[], incrementalDiff: string | null): number {
+  const reviewable = facts.filter((f) => f.status !== 'deleted');
+  const stats = incrementalDiff === null ? null : parseDiff(incrementalDiff).stats;
+  return reviewable.reduce((sum, f) => {
+    const changed = stats === null ? f : stats[f.path];
+    return sum + (changed ? changed.added + changed.removed : 0);
+  }, 0);
 }

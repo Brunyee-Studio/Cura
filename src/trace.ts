@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { allowsDirectReview, DIRECT_REVIEW_MAX_LINES, needsVerifier } from './agents.ts';
 
 /** What the lead did during a review, read from claude-code-action's execution file (its SDK message list). */
 export interface ReviewTrace {
@@ -70,11 +71,13 @@ export function traceFrom(messages: unknown[]): ReviewTrace {
   };
 }
 
-/** Signs the review skipped a step of the lead's procedure. Incremental and deletion-only reviews may dispatch no reviewer. */
-export function traceWarnings(trace: ReviewTrace, review: { mode: 'full' | 'incremental'; reviewable: boolean }): string[] {
+/** Signs the review skipped a step of the lead's procedure, judged by the same rules the lead prompt states. */
+export function traceWarnings(trace: ReviewTrace, review: { reviewLines: number; candidates: number; openThreads: number }): string[] {
   const warnings: string[] = [];
-  if (!trace.subagents.verifier) warnings.push('the verifier never ran, so no finding was verified');
-  if (review.mode === 'full' && review.reviewable && !trace.subagents['scope-reviewer']) warnings.push('no scope-reviewer ran on this full review');
+  if (needsVerifier(review) && !trace.subagents.verifier) warnings.push('the verifier never ran, so no finding was verified');
+  if (!allowsDirectReview(review.reviewLines) && !trace.subagents['scope-reviewer']) {
+    warnings.push(`no scope-reviewer ran although the review has ${review.reviewLines} changed lines (direct review allowed up to ${DIRECT_REVIEW_MAX_LINES})`);
+  }
   return warnings;
 }
 

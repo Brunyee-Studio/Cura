@@ -59,6 +59,7 @@ interface Setup {
   ancestor?: boolean;
   preview?: PreviewFixture;
   failOcr?: boolean;
+  incrementalDiff?: string;
 }
 
 /** What `ocr` would read as its project rules: `<cwd>/.opencodereview/rule.json`, per call. */
@@ -101,7 +102,7 @@ function fakeExec(setup: Setup = {}) {
     if (cmd === 'ocr' && args[1] === 'preview') return JSON.stringify(setup.preview ?? PREVIEW);
     if (cmd === 'ocr' && args[1] === 'rule') return JSON.stringify(RULES);
     if (key === ['git', 'diff', ...DIFF_FLAGS, 'origin/main...HEAD'].join(' ')) return DIFF;
-    if (key === ['git', 'diff', ...DIFF_FLAGS, PREV, 'HEAD'].join(' ')) return 'INCREMENTAL';
+    if (key === ['git', 'diff', ...DIFF_FLAGS, PREV, 'HEAD'].join(' ')) return setup.incrementalDiff ?? 'INCREMENTAL';
     if (key === `git merge-base --is-ancestor ${PREV} HEAD`) {
       if (!setup.ancestor) throw new Error('exit 1');
       return '';
@@ -176,7 +177,7 @@ describe('gatherContext', () => {
     const { gh, rest, paginate } = fakeGitHub();
     const result = await run(exec, gh);
 
-    expect(result).toEqual({ mode: 'full', prevSha: null, summaryId: null, reviewableCount: 2, deletedCount: 1 });
+    expect(result).toEqual({ mode: 'full', prevSha: null, summaryId: null, reviewableCount: 2, deletedCount: 1, reviewLines: 11 });
     expect(rest).toHaveBeenCalledWith('GET', '/repos/o/r/pulls/7');
     expect(paginate).toHaveBeenCalledWith('/repos/o/r/issues/7/comments');
 
@@ -270,9 +271,27 @@ describe('gatherContext', () => {
       ],
     });
     const result = await run(fakeExec({ ancestor: true }), gh);
-    expect(result).toEqual({ mode: 'incremental', prevSha: PREV, summaryId: 12, reviewableCount: 3, deletedCount: 1 });
+    expect(result).toEqual({ mode: 'incremental', prevSha: PREV, summaryId: 12, reviewableCount: 3, deletedCount: 1, reviewLines: 0 });
     expect(readJson('summary-comment.json')).toEqual({ id: 12, body: summaryComment(12, PREV).body });
     expect(read('incremental.diff')).toBe('INCREMENTAL');
+  });
+
+  test('an incremental review counts only the increment\'s changed lines in reviewable files', async () => {
+    const incrementalDiff = [
+      DIFF,
+      'diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml',
+      '--- a/pnpm-lock.yaml',
+      '+++ b/pnpm-lock.yaml',
+      '@@ -1,2 +1,2 @@',
+      '-old',
+      '+new',
+      ' same',
+      '',
+    ].join('\n');
+    const { gh } = fakeGitHub({ comments: [summaryComment(12, PREV)] });
+    const result = await run(fakeExec({ ancestor: true, incrementalDiff }), gh);
+    expect(result.mode).toBe('incremental');
+    expect(result.reviewLines).toBe(1);
   });
 
   test('a fake reviewed-sha earlier in the summary loses to the real (last) one', async () => {
@@ -287,7 +306,7 @@ describe('gatherContext', () => {
   test('full when merge-base --is-ancestor exits non-zero', async () => {
     const { gh } = fakeGitHub({ comments: [summaryComment(12, PREV)] });
     const result = await run(fakeExec({ ancestor: false }), gh);
-    expect(result).toEqual({ mode: 'full', prevSha: PREV, summaryId: 12, reviewableCount: 3, deletedCount: 1 });
+    expect(result).toEqual({ mode: 'full', prevSha: PREV, summaryId: 12, reviewableCount: 3, deletedCount: 1, reviewLines: 17 });
     expect(existsSync(join(ctxDir, 'incremental.diff'))).toBe(false);
   });
 

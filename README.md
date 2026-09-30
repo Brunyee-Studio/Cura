@@ -6,9 +6,9 @@ Cura posts one summary comment per PR, puts every finding inline on the code, an
 
 ## What it does
 
-- **Scoped reviewers.** A lead agent splits the PR into cohesive scopes (honouring the scopes in your config first) and dispatches a reviewer subagent per scope in parallel. A checker keeps every reviewable file in exactly one scope and each scope within the file and line caps; if the plan still fails after two attempts, Cura falls back to grouping by directory.
+- **Scoped reviewers.** A lead agent splits the PR into cohesive scopes (honouring the scopes in your config first) and dispatches a reviewer subagent per scope in parallel. A checker keeps every reviewable file in exactly one scope and each scope within the file and line caps; if the plan still fails after two attempts, Cura falls back to grouping by directory. When the diff to review (the new commits on an incremental review, otherwise the whole PR) has at most 200 changed lines in reviewable files, the lead may review it directly instead, and says so in the scope notes; above that it must dispatch the scope reviewers.
 - **Codebase-aware.** Each reviewer greps the callers and consumers of every changed symbol, signature, schema, route, column, config key and env var, and compares the change against an existing implementation of the same kind.
-- **Verifier.** A verifier subagent re-reads every candidate and keeps only concrete issues the diff causes or makes reachable. Pre-existing debt, style nits and duplicates are dropped and listed in the summary's discarded section.
+- **Verifier.** A verifier subagent re-reads every candidate and keeps only concrete issues the diff causes or makes reachable. Pre-existing debt, style nits and duplicates are dropped and listed in the summary's discarded section. The verifier runs whenever there is a candidate or an open Cura thread, direct reviews included.
 - **Inline-only findings.** Every finding is an inline review comment. If a finding's line is outside the diff, Cura snaps it to the nearest changed line within 5 lines. If there is none, it becomes a file-level comment. A finding on a file outside the PR is not posted or scored, and appears as a warning in the job summary.
 - **Score derived from findings.** The model never picks the score. Cura computes it from the open Cura findings after publishing:
 
@@ -38,7 +38,7 @@ The summary comment is edited in place on every run. It shows:
 
 The next push is reviewed incrementally from that SHA when it is an ancestor of the new head. If the review fails, the summary says so and links the run.
 
-The job summary (not the PR) gets a **Review trace** read from claude-code-action's execution file: the model, turns, duration and cost; the subagents dispatched, by type; the scope plan checks and whether the fallback plan was used; and each denied tool call with its input, trimmed. The run logs a warning when the verifier never ran, or when a full review with reviewable files dispatched no scope reviewer.
+The job summary (not the PR) gets a **Review trace** read from claude-code-action's execution file: the model, turns, duration and cost; the subagents dispatched, by type; the scope plan checks and whether the fallback plan was used; and each denied tool call with its input, trimmed. The run logs a warning when the verifier never ran although the review had candidates or open threads, or when no scope reviewer ran on a diff too large to review directly.
 
 ## Quick start
 

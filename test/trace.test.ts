@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { DIRECT_REVIEW_MAX_LINES } from '../src/agents.ts';
 import { readTrace, renderTrace, traceFrom, traceWarnings, type ReviewTrace } from '../src/trace.ts';
 
 const FIXTURE = fileURLToPath(new URL('./fixtures/execution.json', import.meta.url));
@@ -84,25 +85,34 @@ describe('traceFrom', () => {
 });
 
 describe('traceWarnings', () => {
+  const large = { reviewLines: DIRECT_REVIEW_MAX_LINES + 1, candidates: 1, openThreads: 0 };
+
   test('none when the reviewers and the verifier ran', () => {
-    expect(traceWarnings(trace(), { mode: 'full', reviewable: true })).toEqual([]);
+    expect(traceWarnings(trace(), large)).toEqual([]);
   });
 
-  test('warns when the verifier never ran', () => {
-    expect(traceWarnings(trace({ subagents: { 'scope-reviewer': 2 } }), { mode: 'full', reviewable: true })).toEqual([
-      'the verifier never ran, so no finding was verified',
+  test('warns when the verifier never ran on candidates', () => {
+    expect(traceWarnings(trace({ subagents: { 'scope-reviewer': 2 } }), large)).toEqual(['the verifier never ran, so no finding was verified']);
+  });
+
+  test('warns when the verifier never ran on open threads', () => {
+    const review = { ...large, candidates: 0, openThreads: 1 };
+    expect(traceWarnings(trace({ subagents: { 'scope-reviewer': 2 } }), review)).toEqual(['the verifier never ran, so no finding was verified']);
+  });
+
+  test('no verifier warning when there was nothing to verify', () => {
+    const review = { ...large, candidates: 0, openThreads: 0 };
+    expect(traceWarnings(trace({ subagents: { 'scope-reviewer': 2 } }), review)).toEqual([]);
+  });
+
+  test('warns when no scope-reviewer ran on a review too large to review directly', () => {
+    expect(traceWarnings(trace({ subagents: { verifier: 1 } }), large)).toEqual([
+      `no scope-reviewer ran although the review has ${DIRECT_REVIEW_MAX_LINES + 1} changed lines (direct review allowed up to ${DIRECT_REVIEW_MAX_LINES})`,
     ]);
   });
 
-  test('warns when a full review ran no scope-reviewer', () => {
-    expect(traceWarnings(trace({ subagents: { verifier: 1 } }), { mode: 'full', reviewable: true })).toEqual(['no scope-reviewer ran on this full review']);
-  });
-
-  test.each([
-    ['an incremental review', { mode: 'incremental' as const, reviewable: true }],
-    ['a deletion-only review', { mode: 'full' as const, reviewable: false }],
-  ])('%s without a scope-reviewer is not warned about', (_label, review) => {
-    expect(traceWarnings(trace({ subagents: { verifier: 1 } }), review)).toEqual([]);
+  test('a direct review within the threshold is not warned about', () => {
+    expect(traceWarnings(trace({ subagents: { verifier: 1 } }), { ...large, reviewLines: DIRECT_REVIEW_MAX_LINES })).toEqual([]);
   });
 });
 

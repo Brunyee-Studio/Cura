@@ -65,7 +65,9 @@ afterEach(() => {
 const writeCtx = (name: string, value: unknown) => writeFileSync(join(ctx, name), JSON.stringify(value));
 
 /** Lays down the ctx files `context` would produce for a one-file PR (src/a.ts, lines 1–20 added). */
-function seedCtx(over: { reviewableCount?: number; deletedCount?: number; facts?: unknown[]; config?: unknown; maxFiles?: number } = {}) {
+function seedCtx(
+  over: { reviewableCount?: number; deletedCount?: number; facts?: unknown[]; config?: unknown; maxFiles?: number; reviewLines?: number; threads?: unknown[] } = {},
+) {
   const facts = over.facts ?? [{ path: 'src/a.ts', status: 'modified', language: 'typescript', added: 20, removed: 0, dir: 'src' }];
   writeCtx('context.json', {
     mode: 'full',
@@ -77,6 +79,7 @@ function seedCtx(over: { reviewableCount?: number; deletedCount?: number; facts?
     headSha: HEAD,
     maxFiles: over.maxFiles ?? 12,
     maxLines: 1500,
+    reviewLines: over.reviewLines ?? 20,
   });
   writeCtx('facts.json', facts);
   writeCtx('preview.json', {
@@ -86,7 +89,7 @@ function seedCtx(over: { reviewableCount?: number; deletedCount?: number; facts?
   const lines = Array.from({ length: 20 }, (_, i) => i + 1);
   writeCtx('hunks.json', { 'src/a.ts': [{ start: 1, end: 20 }] });
   writeCtx('added-lines.json', { 'src/a.ts': lines });
-  writeCtx('threads.json', []);
+  writeCtx('threads.json', over.threads ?? []);
   writeCtx('summary-comment.json', {});
   writeCtx('config.json', over.config ?? {});
 }
@@ -349,15 +352,16 @@ describe('publish', () => {
     const fixture = () => JSON.parse(readFileSync(new URL('./fixtures/execution.json', import.meta.url), 'utf8')) as Record<string, unknown>[];
     const summary = () => (existsSync(summaryFile) ? readFileSync(summaryFile, 'utf8') : '');
     /** The fixture run carrying a publishable review, minus the messages `drop` matches. */
-    const writeExecution = (drop: (m: Record<string, unknown>) => boolean = () => false) => {
+    const writeExecution = (drop: (m: Record<string, unknown>) => boolean = () => false, output: Review = review()) => {
       const file = join(root, 'claude-execution-output.json');
       const messages = fixture()
         .filter((m) => !drop(m))
-        .map((m) => (m.type === 'result' ? { ...m, structured_output: review() } : m));
+        .map((m) => (m.type === 'result' ? { ...m, structured_output: output } : m));
       writeFileSync(file, JSON.stringify(messages));
       return file;
     };
     const dispatches = (type: string) => (m: Record<string, unknown>) => JSON.stringify(m).includes(`"subagent_type":"${type}"`);
+    const noSubagents = (m: Record<string, unknown>) => JSON.stringify(m).includes('"subagent_type"');
 
     test('writes the trace to the job summary without warnings', async () => {
       seedCtx();
@@ -372,22 +376,40 @@ describe('publish', () => {
       expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('review trace');
     });
 
-    test('warns when the verifier never ran', async () => {
+    test('warns when the verifier never ran on a candidate', async () => {
       seedCtx();
       const { gh } = fakeGitHub();
       const { io, text, code } = makeIo();
-      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('verifier')) }), io, { createGitHub: () => gh });
+      const output = review({ discarded: [{ location: 'src/a.ts:3', candidate: 'maybe', reason: 'not reachable' }] });
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('verifier'), output) }), io, { createGitHub: () => gh });
       expect(code()).toBe(0);
       expect(text()).toContain('::warning::Cura: the verifier never ran, so no finding was verified');
     });
 
-    test('warns when a full review ran no scope-reviewer', async () => {
-      seedCtx();
+    test('warns when the verifier never ran on an open thread', async () => {
+      seedCtx({ threads: [{ id: 'T1', isResolved: false }, { id: 'T2', isResolved: true }] });
+      const { gh } = fakeGitHub();
+      const { io, text } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('verifier')) }), io, { createGitHub: () => gh });
+      expect(text()).toContain('::warning::Cura: the verifier never ran, so no finding was verified');
+    });
+
+    test('a small direct review with nothing to verify is not warned about', async () => {
+      seedCtx({ threads: [{ id: 'T2', isResolved: true }] });
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(noSubagents) }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(text()).not.toContain('::warning::');
+    });
+
+    test('warns when no scope-reviewer ran on a review too large to review directly', async () => {
+      seedCtx({ reviewLines: 500 });
       const { gh } = fakeGitHub();
       const { io, text, code } = makeIo();
       await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution(dispatches('scope-reviewer')) }), io, { createGitHub: () => gh });
       expect(code()).toBe(0);
-      expect(text()).toContain('::warning::Cura: no scope-reviewer ran on this full review');
+      expect(text()).toContain('::warning::Cura: no scope-reviewer ran although the review has 500 changed lines');
     });
 
     test('REVIEW without an execution file publishes with no trace', async () => {
@@ -565,6 +587,7 @@ describe('context', () => {
       summaryId: null,
       reviewableCount: 0,
       deletedCount: 0,
+      reviewLines: 0,
       base: 'main',
       headSha: HEAD,
       maxFiles: 12,
@@ -625,6 +648,13 @@ describe('context', () => {
 });
 
 describe('prompt', () => {
+  test('requires the scope reviewers when the diff to review is above the direct-review threshold', async () => {
+    seedCtx({ reviewLines: 500 });
+    const { io } = makeIo();
+    await main(['prompt'], { CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7' }, io);
+    expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('DIRECT REVIEW: not allowed');
+  });
+
   test('writes the lead prompt and agents, and emits multi-line outputs with a delimiter', async () => {
     seedCtx();
     const { io, code } = makeIo();
@@ -635,6 +665,7 @@ describe('prompt', () => {
     expect(prompt).toContain('PR NUMBER: 7');
     expect(prompt).toContain(`CONTEXT DIR: ${ctx}`);
     expect(prompt).toContain('at most 12 files and at most 1500 changed lines');
+    expect(prompt).toContain('DIRECT REVIEW: allowed');
     expect(Object.keys(JSON.parse(readFileSync(join(ctx, 'agents.json'), 'utf8')))).toEqual(['scope-reviewer', 'verifier']);
 
     const out = outputs();
