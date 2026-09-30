@@ -24,7 +24,7 @@ jobs:
     #   runs_on: ubuntu-latest
     #   rules: .opencodereview/rule.json
     #   config: .github/cura.json
-    #   model: claude-opus-5-5
+    #   model: claude-sonnet-5-5
     #   fail_on: none
     #   max_files_per_scope: 12
     #   max_lines_per_scope: 1500

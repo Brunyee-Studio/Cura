@@ -34,9 +34,9 @@ inputs:
     required: false
     default: ''
   model:
-    description: Model for the lead and its subagents. Pinned to Opus 5.5; set another model ID to override.
+    description: Model for the lead and its subagents. Pinned to Sonnet 5.5; set another model ID to override.
     required: false
-    default: claude-opus-5-5
+    default: claude-sonnet-5-5
   ocr_version:
     description: OpenCodeReview release to install when `ocr` is not on PATH. Defaults to the version pinned in Cura.
     required: false
