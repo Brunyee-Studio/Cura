@@ -42,6 +42,10 @@ inputs:
     description: OpenCodeReview release to install when `ocr` is not on PATH. Defaults to the version pinned in Cura.
     required: false
     default: ''
+  ocr_sha256:
+    description: SHA-256 of the OpenCodeReview asset for this runner. Required with `ocr_version`; Cura pins the hashes of its own version.
+    required: false
+    default: ''
   max_files_per_scope:
     description: Chunk cap — files per review scope.
     required: false
@@ -167,6 +171,7 @@ runs:
       shell: bash
       env:
         CURA_OCR_VERSION: ${{ inputs.ocr_version }}
+        CURA_OCR_SHA256: ${{ inputs.ocr_sha256 }}
       run: |
         node "$GITHUB_ACTION_PATH/src/cli.ts" install
 

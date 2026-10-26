@@ -7,7 +7,6 @@ import { parse as parseShell } from 'shell-quote';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { main, shellQuote, type Deps } from '../src/cli.ts';
 import { GitHubError, type GitHub } from '../src/github.ts';
-import { assetName } from '../src/install.ts';
 import { renderSummary } from '../src/render.ts';
 import type { Finding, Review } from '../src/types.ts';
 import { makeIo } from './io.ts';
@@ -797,16 +796,15 @@ describe('prompt', () => {
 
 describe('install', () => {
   const binary = new TextEncoder().encode('#!/bin/sh\necho ocr\n');
-  const sums = `${createHash('sha256').update(binary).digest('hex')}  ${assetName(process.platform, process.arch)}\n`;
-  const fakeFetch = (async (url: string) =>
-    new Response(url.endsWith('sha256sum.txt') ? sums : binary, { status: 200 })) as unknown as typeof fetch;
+  const sha256 = createHash('sha256').update(binary).digest('hex');
+  const fakeFetch = (async () => new Response(binary, { status: 200 })) as unknown as typeof fetch;
 
   test('downloads ocr into RUNNER_TEMP/cura-bin and appends it to GITHUB_PATH', async () => {
     const pathFile = join(root, 'path');
     const emptyDir = join(root, 'empty');
     mkdirSync(emptyDir);
     const { io, code } = makeIo();
-    await main(['install'], { RUNNER_TEMP: root, GITHUB_PATH: pathFile, PATH: emptyDir }, io, { fetch: fakeFetch });
+    await main(['install'], { RUNNER_TEMP: root, GITHUB_PATH: pathFile, PATH: emptyDir, CURA_OCR_SHA256: sha256 }, io, { fetch: fakeFetch });
     expect(code()).toBe(0);
     const binDir = join(root, 'cura-bin');
     expect(existsSync(join(binDir, process.platform === 'win32' ? 'ocr.exe' : 'ocr'))).toBe(true);

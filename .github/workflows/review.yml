@@ -3,10 +3,10 @@ name: Cura review
 # Reusable workflow: call it from a workflow triggered by `pull_request`
 # (opened, reopened, ready_for_review, synchronize, edited, closed),
 # `issue_comment` (created) and `pull_request_review` (submitted) — see
-# examples/cura.yml. It checks out the PR head and runs the Cura action (the
-# checkout is the caller's repository, so the action is referenced by tag;
-# `v1` moves with this workflow's own tag). A closed PR or a submitted review
-# only re-scores the summary, with no model and no checkout.
+# examples/cura.yml. It checks out the PR head and runs the Cura action from
+# this workflow's own commit (`job.workflow_sha`), so a caller that pins this
+# workflow by SHA or release tag runs exactly that release's action. A closed
+# PR or a submitted review only re-scores the summary, with no model.
 on:
   workflow_call:
     inputs:
@@ -108,8 +108,14 @@ jobs:
           PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           COMMENT_ID: ${{ github.event.comment.id }}
           ALLOW_FORKS: ${{ inputs.allow_forks }}
+          CURA_SHA: ${{ job.workflow_sha }}
         run: |
           set -euo pipefail
+          # Without it the Cura checkout falls back to the default branch.
+          if [[ ! "$CURA_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::job.workflow_sha is unavailable (GitHub Enterprise Server?); run the composite action pinned by SHA instead."
+            exit 1
+          fi
           fields="$(gh pr view "$PR" --repo "$REPO" --json headRefOid,isCrossRepository \
             --jq '[.headRefOid, .isCrossRepository] | @tsv')"
           IFS=$'\t' read -r head_sha cross <<<"$fields"
@@ -133,9 +139,17 @@ jobs:
           # The reviewer can read the workspace; keep the token out of .git/config.
           persist-credentials: false
 
+      - name: Check out Cura
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .cura-action
+          persist-credentials: false
+
       - name: Cura
         id: cura
-        uses: Brunyee-Studio/cura@v1
+        uses: ./.cura-action
         with:
           claude_code_oauth_token: ${{ secrets.claude_code_oauth_token }}
           pr: ${{ github.event.pull_request.number || github.event.issue.number }}
@@ -168,8 +182,25 @@ jobs:
     permissions:
       pull-requests: write
     steps:
+      - name: Check Cura ref
+        env:
+          CURA_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [[ ! "$CURA_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::job.workflow_sha is unavailable (GitHub Enterprise Server?); run the composite action pinned by SHA instead."
+            exit 1
+          fi
+
+      - name: Check out Cura
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .cura-action
+          persist-credentials: false
+
       - name: Cura
-        uses: Brunyee-Studio/cura@v1
+        uses: ./.cura-action
         with:
           mode: rescore
           pr: ${{ github.event.pull_request.number }}

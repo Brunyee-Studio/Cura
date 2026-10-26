@@ -137,6 +137,7 @@ async function install(env: Env, io: Io, d: Deps): Promise<void> {
   const existing = findOnPath(env.PATH, 'ocr');
   const ocr = await resolveOcr({
     version: env.CURA_OCR_VERSION || OCR_VERSION,
+    sha256: env.CURA_OCR_SHA256 || undefined,
     platform: process.platform,
     arch: process.arch,
     binDir,

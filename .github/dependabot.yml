@@ -1,0 +1,33 @@
+# Version updates wait a week after a release (security updates do not), so a
+# hijacked release is usually pulled before it is proposed here.
+version: 2
+updates:
+  # Workflows and action.yml. Updating an action Cura's own steps use changes
+  # what consumers run, so these are `fix` commits and cut a patch release.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: fix
+      include: scope
+
+  # Dev dependencies only: Cura has no runtime npm dependencies.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      dev-dependencies:
+        patterns: ['*']
+    # The test mirrors the shell-quote that claude-code-action locks; bump it with that action.
+    ignore:
+      - dependency-name: shell-quote
+      - dependency-name: '@types/shell-quote'

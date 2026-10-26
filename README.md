@@ -74,11 +74,31 @@ The reusable workflow ([`.github/workflows/review.yml`](.github/workflows/review
 - runs on a `/cura` comment from an `OWNER`, `MEMBER` or `COLLABORATOR`;
 - cancels an in-progress review of the same PR (concurrency group `cura-<pr>`);
 - refuses PRs from forks;
-- checks out the PR head and runs the action.
+- checks out the PR head and runs the action from the reusable workflow's own commit.
 
 A closed PR or a submitted PR review runs a re-score job instead (see [below](#re-scoring-without-a-review)).
 
 Because a called workflow's token can't have more permissions than its caller grants, the calling job must grant the three permissions shown. `contents: write` is needed only to resolve review threads, which GitHub gates on repository write access.
+
+### Pinning a release
+
+`@v1` moves to every new `1.x` release. To run exactly one release, pin its commit SHA and let Dependabot propose upgrades:
+
+```yaml
+    uses: Brunyee-Studio/cura/.github/workflows/review.yml@<commit-sha> # vX.Y.Z
+```
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+The reusable workflow checks out the action from its own commit (`job.workflow_sha`), so the pin covers the action as well. Releases are immutable, so a `vX.Y.Z` tag always names the same commit. `job.workflow_sha` is not available on GitHub Enterprise Server, where the reusable workflow fails; use the composite action pinned by SHA there. The same pin works for the composite action: `Brunyee-Studio/cura@<commit-sha> # vX.Y.Z`.
 
 ### Re-running with `/cura`
 
@@ -163,6 +183,7 @@ To re-score on a submitted review and on close, add a second job that runs the a
 | `pr` | no | `''` | PR number; defaults to the triggering `pull_request` or `issue_comment` event's PR |
 | `model` | no | `claude-sonnet-5-5` | Model for the lead and its subagents (pinned to Sonnet 5.5); set another model ID to override |
 | `ocr_version` | no | `''` | OpenCodeReview release to install when `ocr` is not on `PATH`; empty means the version pinned in Cura |
+| `ocr_sha256` | no | `''` | SHA-256 of the OpenCodeReview asset for the runner's platform; required with `ocr_version` |
 | `max_files_per_scope` | no | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | no | `1500` | Chunk cap: changed lines (added + removed) per review scope |
 | `fail_on` | no | `none` | Fail the step when an open finding at or above this severity exists (`P0`, `P1` or `none`) |
@@ -228,7 +249,7 @@ Cura runs [OpenCodeReview](https://github.com/alibaba/open-code-review) in deleg
 ## Self-hosted runners
 
 - Set `runs_on` (reusable workflow) or `runs-on` (your own job) to your runner label.
-- If `ocr` is already on `PATH`, Cura uses it. Otherwise Cura downloads the pinned release from `alibaba/open-code-review` and checks it against the release's `sha256sum.txt`. Set `ocr_version` to install a different release.
+- If `ocr` is already on `PATH`, Cura uses it. Otherwise Cura downloads the pinned release from `alibaba/open-code-review` and checks it against the SHA-256 recorded in Cura, not against a checksum file from the same release. To install a different release, set `ocr_version` and `ocr_sha256` (the SHA-256 of the asset for your runner's platform).
 - The runner needs `bash`, `git` and the GitHub CLI (`gh`). The action sets up Node 24 itself.
 - **Bot-triggered runs** (for example Dependabot PRs) fail the review step unless the bot's login is listed in `allowed_bots`, such as `allowed_bots: 'dependabot[bot]'`.
 - Keep `allow_forks` off: on a persistent runner, fork code would run with the job's write token and secrets.
@@ -258,13 +279,15 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 Releases are automatic. Every push to `main` runs the **Release** workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml)), which:
 
-1. runs typecheck, lint and tests;
-2. runs [semantic-release](https://semantic-release.gitbook.io), which reads the commits since the last `vX.Y.Z` tag, then tags the next version and publishes a GitHub release with generated notes. `fix` gives a patch, `feat` a minor, and `!` or a `BREAKING CHANGE:` footer a major. Other types release nothing;
-3. force-moves the major tag (`v1`) and `latest` to the highest release.
+1. runs typecheck, lint and tests in a job without write access;
+2. in a separate job that installs without install scripts or a dependency cache, runs [semantic-release](https://semantic-release.gitbook.io), which reads the commits since the last `vX.Y.Z` tag, then tags the next version and publishes a GitHub release with generated notes. `fix` gives a patch, `feat` a minor, and `!` or a `BREAKING CHANGE:` footer a major. Other types release nothing;
+3. force-moves the major tag (`v1`) to the highest release.
 
-Nothing is committed back to `main`. To retry a failed release, run the workflow by hand from `main`.
+Nothing is committed back to `main`. To retry a failed release, run the workflow by hand from `main`. Releases are immutable, so a `vX.Y.Z` tag never moves once published; only `vX` does.
 
-Consumers pin `@v1` or a commit SHA. A breaking change creates `v2` and leaves `v1` on the last `1.x` release.
+Consumers pin a commit SHA (see [Pinning a release](#pinning-a-release)) or follow `@v1`. A breaking change creates `v2` and leaves `v1` on the last `1.x` release.
+
+Dependencies are pinned to exact versions in `package.json` and installed from `pnpm-lock.yaml`. pnpm resolves only versions published at least three days ago (`minimumReleaseAge` in `pnpm-workspace.yaml`), and Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes updates a week after a release.
 
 ## License
 

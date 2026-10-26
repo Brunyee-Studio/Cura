@@ -18,7 +18,13 @@ const exampleAlternative = example
   .slice(example.split('\n').indexOf('#   review:'))
   .map((line) => line.replace(/^# ?/, ''));
 
-const WORKFLOWS = ['.github/workflows/review.yml', '.github/workflows/cura.yml', '.github/workflows/release.yml', 'examples/cura.yml'];
+const WORKFLOWS = [
+  '.github/workflows/review.yml',
+  '.github/workflows/cura.yml',
+  '.github/workflows/release.yml',
+  '.github/workflows/ci.yml',
+  'examples/cura.yml',
+];
 
 /** name → default (quotes stripped) of the map entries indented `indent` spaces under the `header` line. */
 function inputDefaults(text: string, header: string, indent: number): Map<string, string> {
@@ -72,7 +78,7 @@ describe('workflows', () => {
   test.each(WORKFLOWS)('%s: third-party actions are pinned by commit SHA', (path) => {
     const uses = [...read(path).matchAll(/^[\s#]*(?:- )?uses: (\S+)/gm)].map((m) => m[1]!);
     for (const ref of uses) {
-      if (ref === './' || ref.startsWith('Brunyee-Studio/cura')) continue;
+      if (ref.startsWith('./') || ref.startsWith('Brunyee-Studio/cura')) continue;
       expect(ref).toMatch(/@[0-9a-f]{40}$/);
     }
   });
@@ -161,8 +167,18 @@ describe('rescore', () => {
 });
 
 describe('review.yml', () => {
-  test('uses the action by its major tag', () => {
-    expect(review).toMatch(/^ {8}uses: Brunyee-Studio\/cura@v1$/m);
+  test.each(['review', 'rescore'])('the %s job runs the action from the workflow\'s own commit', (name) => {
+    const text = job(review.split('\n'), name);
+    expect(text).toContain('CURA_SHA: ${{ job.workflow_sha }}');
+    expect(text).toContain('if [[ ! "$CURA_SHA" =~ ^[0-9a-f]{40}$ ]]; then');
+    expect(text).toContain('repository: ${{ job.workflow_repository }}');
+    expect(text).toContain('ref: ${{ job.workflow_sha }}');
+    expect(text).toContain('path: .cura-action');
+    expect(text).toMatch(/^ {8}uses: \.\/\.cura-action$/m);
+  });
+
+  test('never runs the action by a moving tag', () => {
+    expect(review).not.toMatch(/uses: Brunyee-Studio\/cura@/);
   });
 
   test('declares the expected inputs', () => {
@@ -216,9 +232,23 @@ describe('release.yml', () => {
     ]);
   });
 
+  test('runs the dev dependencies without write access and releases from a job that runs no tests', () => {
+    const lines = release.split('\n');
+    expect(release).toMatch(/^permissions:\n  contents: read$/m);
+    const check = job(lines, 'check');
+    expect(check).not.toContain('permissions:');
+    expect(check).toContain('persist-credentials: false');
+    expect(check).toContain('run: pnpm test');
+    const publish = job(lines, 'release');
+    expect(publish).toMatch(/^ {4}needs: check\n {4}runs-on: ubuntu-latest\n {4}permissions:\n {6}contents: write$/m);
+    expect(publish).toContain('run: pnpm install --frozen-lockfile --ignore-scripts');
+    expect(publish).not.toContain('cache:');
+    expect(publish).not.toMatch(/pnpm (typecheck|lint|test)/);
+  });
+
   describe('the tag move', () => {
     const lines = release.split('\n');
-    const script = runBlocks(lines.slice(lines.indexOf('      - name: Move major and latest tags')))[0]!
+    const script = runBlocks(lines.slice(lines.indexOf('      - name: Move major tag')))[0]!
       .map((l) => l.slice(10))
       .join('\n');
 
@@ -239,17 +269,16 @@ describe('release.yml', () => {
     const remoteTarget = (git: (...args: string[]) => string, tag: string) =>
       git('ls-remote', 'origin', `refs/tags/${tag}^{}`).split('\t')[0];
 
-    test('moves the major tag and latest to a new release and pushes them', () => {
+    test('moves the major tag to a new release and pushes it, and no other tag', () => {
       withRepo((git, move) => {
         git('commit', '-q', '--allow-empty', '-m', 'feat: a');
         git('tag', 'v1.0.0');
         git('commit', '-q', '--allow-empty', '-m', 'fix: b');
         git('tag', 'v1.0.1');
-        expect(move()).toBe('Moved v1 and latest to v1.0.1.');
-        const head = git('rev-parse', 'HEAD');
-        expect(remoteTarget(git, 'v1')).toBe(head);
-        expect(remoteTarget(git, 'latest')).toBe(head);
-        expect(move()).toBe('v1 and latest already point at v1.0.1.');
+        expect(move()).toBe('Moved v1 to v1.0.1.');
+        expect(remoteTarget(git, 'v1')).toBe(git('rev-parse', 'HEAD'));
+        expect(git('ls-remote', '--tags', 'origin').split('\n')).toHaveLength(2);
+        expect(move()).toBe('v1 already points at v1.0.1.');
       });
     });
 
@@ -261,7 +290,7 @@ describe('release.yml', () => {
         git('tag', 'v1.0.10');
         const newest = git('rev-parse', 'HEAD');
         git('checkout', '-q', 'v1.0.9');
-        expect(move()).toBe('Moved v1 and latest to v1.0.10.');
+        expect(move()).toBe('Moved v1 to v1.0.10.');
         expect(remoteTarget(git, 'v1')).toBe(newest);
       });
     });
@@ -274,10 +303,9 @@ describe('release.yml', () => {
         const v1 = git('rev-parse', 'HEAD');
         git('commit', '-q', '--allow-empty', '-m', 'feat!: b');
         git('tag', 'v2.0.0');
-        expect(move()).toBe('Moved v2 and latest to v2.0.0.');
+        expect(move()).toBe('Moved v2 to v2.0.0.');
         expect(remoteTarget(git, 'v1')).toBe(v1);
         expect(remoteTarget(git, 'v2')).toBe(git('rev-parse', 'HEAD'));
-        expect(remoteTarget(git, 'latest')).toBe(git('rev-parse', 'HEAD'));
       });
     });
   });
