@@ -3,7 +3,8 @@ name: Release
 # Every push to main is released by semantic-release from its conventional
 # commits: `fix` → patch, `feat` → minor, `!`/`BREAKING CHANGE` → major, and
 # anything else releases nothing. It pushes the `vX.Y.Z` tag and the GitHub
-# release; this workflow then moves the `vX` major tag and `latest` onto it.
+# release; this workflow then moves the `vX` major tag onto it. Releases are
+# immutable, so a `vX.Y.Z` tag never moves once published.
 # Dispatch it by hand to retry a release that failed after its checks.
 on:
   push:
@@ -11,15 +12,39 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  # The dev dependencies run here, without write access. Only the release job
+  # holds a token that can push tags, and it runs only semantic-release and the
+  # major tag move.
+  check:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 10.34.7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
+
+  release:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Check branch
         run: |
@@ -35,37 +60,33 @@ jobs:
           fetch-depth: 0
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
-          version: 10.14.0
+          version: 10.34.7
+      # No dependency cache (another job's cache must not reach the write token)
+      # and no install scripts.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm lint
-      - run: pnpm test
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Semantic release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm exec semantic-release
 
-      - name: Move major and latest tags
+      - name: Move major tag
         run: |
           set -euo pipefail
-          # Point them at the highest release, not at a tag on HEAD, so a
-          # re-run of an older push can never move them backwards.
+          # Point it at the highest release, not at a tag on HEAD, so a re-run
+          # of an older push can never move it backwards.
           VERSION=$(git tag --list 'v*.*.*' | sort -V | tail -n1)
           MAJOR=${VERSION%%.*}
           TARGET=$(git rev-parse "$VERSION^{}")
-          if [[ "$(git rev-parse -q --verify "$MAJOR^{}")" == "$TARGET" \
-             && "$(git rev-parse -q --verify "latest^{}")" == "$TARGET" ]]; then
-            echo "$MAJOR and latest already point at $VERSION."
+          if [[ "$(git rev-parse -q --verify "$MAJOR^{}")" == "$TARGET" ]]; then
+            echo "$MAJOR already points at $VERSION."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -fa "$MAJOR" -m "$MAJOR → $VERSION" "$VERSION^{}"
-          git tag -fa latest -m "latest → $VERSION" "$VERSION^{}"
-          git push --force origin "refs/tags/$MAJOR" refs/tags/latest
-          echo "Moved $MAJOR and latest to $VERSION."
+          git push --force origin "refs/tags/$MAJOR"
+          echo "Moved $MAJOR to $VERSION."

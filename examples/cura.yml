@@ -24,6 +24,9 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+    # `@v1` follows every 1.x release. To run exactly one release, pin its
+    # commit SHA instead (`review.yml@<commit-sha> # vX.Y.Z`) and let
+    # Dependabot's github-actions updates propose new ones.
     uses: Brunyee-Studio/cura/.github/workflows/review.yml@v1
     # Every input is optional; the defaults are shown.
     # with:
