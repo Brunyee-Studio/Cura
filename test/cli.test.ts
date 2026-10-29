@@ -391,6 +391,16 @@ describe('publish', () => {
       expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('review trace');
     });
 
+    test('warns when the lead never read the saved /code-review findings', async () => {
+      seedCtx();
+      writeFileSync(join(ctx, 'code-review.md'), '1. `src/a.ts:3`: skips the first item.\n');
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution() }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(text()).toContain('::warning::Cura: the lead never read code-review.md, so the /code-review findings were not used');
+    });
+
     test('warns when the verifier never ran on a candidate', async () => {
       seedCtx();
       const { gh } = fakeGitHub();
@@ -851,6 +861,30 @@ describe('code-review', () => {
     expect(text()).not.toContain('::warning::');
   });
 
+  test('saves findings reported through ReportFindings alongside the final text', async () => {
+    const reported = { file: 'src/a.ts', line: 3, summary: 'skips the first item', failure_scenario: 'a one-item cart totals 0' };
+    const file = writeExecution([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r', name: 'ReportFindings', input: { findings: [reported] } }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: 'Reported 1 finding.' },
+    ]);
+    const { io, text } = makeIo();
+    await main(['code-review'], env(file), io);
+    const notes = readFileSync(join(ctx, 'code-review.md'), 'utf8');
+    expect(notes).toMatch(/^Reported 1 finding\.\n\n## Reported findings\n\n```json\n/);
+    expect(JSON.parse(/```json\n([\s\S]*)\n```/.exec(notes)![1]!)).toEqual([reported]);
+    expect(text()).not.toContain('::warning::');
+  });
+
+  test('saves reported findings even when the final text is empty', async () => {
+    const file = writeExecution([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r', name: 'ReportFindings', input: { findings: [{ file: 'src/a.ts', line: 3 }] } }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: '' },
+    ]);
+    const { io } = makeIo();
+    await main(['code-review'], env(file), io);
+    expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toMatch(/^## Reported findings/);
+  });
+
   test('writes its trace, denials and result to the job summary', async () => {
     const file = writeExecution([
       { type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' },
@@ -870,6 +904,7 @@ describe('code-review', () => {
     expect(summary).toContain('`claude-sonnet-5-5`');
     expect(summary).toContain('- Permission denials: 1');
     expect(summary).toContain('gh pr diff 7');
+    expect(summary).toContain('<details><summary>Denied tool calls</summary>\n\n```json\n{"tool":"Bash","input":{"command":"gh pr diff 7"}}\n```');
     expect(summary).toContain('<details><summary>Result</summary>\n\n1. `src/a.ts:3`: skips the first item.');
   });
 

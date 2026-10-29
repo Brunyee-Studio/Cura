@@ -41,6 +41,9 @@ export function needsVerifier(work: { candidates: number; openThreads: number })
 /** Subdirectory of the context dir the lead writes its drafts to for the checker. */
 export const DRAFTS_DIR = 'drafts';
 
+/** File in the context dir that holds the /code-review pass's findings for the lead. */
+export const CODE_REVIEW_FILE = 'code-review.md';
+
 const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
 
 function readTemplate(name: string): string {

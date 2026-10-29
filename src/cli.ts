@@ -7,6 +7,7 @@ import {
   allowedTools,
   allowsDirectReview,
   buildAgents,
+  CODE_REVIEW_FILE,
   codeReviewAllowedTools,
   codeReviewDisallowedTools,
   codeReviewPrompt,
@@ -22,7 +23,7 @@ import { checkPlan, fallbackPlan } from './plan.ts';
 import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
 import { rescore, type RescoreResult } from './rescore.ts';
 import { loadSchema } from './schema.ts';
-import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings } from './trace.ts';
+import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings, type ReviewTrace } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
 
 type Env = NodeJS.ProcessEnv;
@@ -264,15 +265,29 @@ function saveCodeReview(env: Env, io: Io): void {
     | { subtype?: unknown; is_error?: unknown; result?: unknown }
     | undefined;
   const text = result?.subtype === 'success' && !result.is_error && typeof result.result === 'string' ? result.result.trim() : '';
-  if (trace !== null) {
-    const findings = text === '' ? '' : `\n<details><summary>Result</summary>\n\n${text}\n\n</details>\n`;
-    stepSummary(env, io, `${renderTrace(trace, '/code-review trace')}${findings}`);
-  }
-  if (text === '') {
+  // The skill can report its findings through ReportFindings and leave only a summary in its final text.
+  const reported = trace?.reportedFindings ?? [];
+  const notes = [
+    ...(text === '' ? [] : [text]),
+    ...(reported.length === 0 ? [] : [`## Reported findings\n\n\`\`\`json\n${JSON.stringify(reported, null, 2)}\n\`\`\``]),
+  ].join('\n\n');
+  if (trace !== null) stepSummary(env, io, renderCodeReviewTrace(trace, notes));
+  if (notes === '') {
     io.stdout('::warning::Cura: the /code-review pass returned no result, so the review runs without its findings.');
     return;
   }
-  writeFileSync(join(ctxDir, 'code-review.md'), `${text}\n`);
+  writeFileSync(join(ctxDir, CODE_REVIEW_FILE), `${notes}\n`);
+}
+
+// The trace trims each denial to one line; the pass picks its own commands, so they are listed in full too.
+function renderCodeReviewTrace(trace: ReviewTrace, notes: string): string {
+  const details = (summary: string, body: string) => `\n<details><summary>${summary}</summary>\n\n${body}\n\n</details>\n`;
+  const denials = trace.denials.map((d) => JSON.stringify(d)).join('\n');
+  return [
+    renderTrace(trace, '/code-review trace'),
+    denials === '' ? '' : details('Denied tool calls', `\`\`\`json\n${denials}\n\`\`\``),
+    notes === '' ? '' : details('Result', notes),
+  ].join('');
 }
 
 /**
@@ -473,7 +488,10 @@ function reportTrace(env: Env, io: Io, file: string, state: RunState, review: un
   const { findings, discarded } = (review ?? {}) as Partial<Review>;
   const candidates = (Array.isArray(findings) ? findings.length : 0) + (Array.isArray(discarded) ? discarded.length : 0);
   const openThreads = readJson<Thread[]>(ctxDir, 'threads.json').filter((t) => !t.isResolved).length;
-  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads })) io.stdout(`::warning::Cura: ${warning}`);
+  const codeReviewSaved = existsSync(join(ctxDir, CODE_REVIEW_FILE));
+  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads, codeReviewSaved })) {
+    io.stdout(`::warning::Cura: ${warning}`);
+  }
 }
 
 function parseJson(text: string): unknown {
