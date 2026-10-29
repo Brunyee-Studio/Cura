@@ -81,7 +81,7 @@ export function traceWarnings(trace: ReviewTrace, review: { reviewLines: number;
   return warnings;
 }
 
-export function renderTrace(trace: ReviewTrace): string {
+export function renderTrace(trace: ReviewTrace, title = 'review trace'): string {
   const run = [
     trace.model === null ? null : `\`${trace.model}\``,
     trace.turns === null ? null : `${trace.turns} turns`,
@@ -90,7 +90,7 @@ export function renderTrace(trace: ReviewTrace): string {
   ].filter((part) => part !== null);
   const subagents = Object.entries(trace.subagents).map(([type, count]) => `${type} ×${count}`);
   const lines = [
-    '### Cura: review trace',
+    `### Cura: ${title}`,
     '',
     ...(run.length > 0 ? [`- Run: ${run.join(' · ')}`] : []),
     `- Subagents: ${subagents.length > 0 ? subagents.join(', ') : 'none'}`,

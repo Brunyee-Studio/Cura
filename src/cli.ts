@@ -258,11 +258,16 @@ function prompt(env: Env, io: Io): void {
 function saveCodeReview(env: Env, io: Io): void {
   const ctxDir = ctxFromEnv(env);
   const file = env.CURA_CODE_REVIEW_EXECUTION_FILE;
+  const trace = file ? readTrace(file) : null;
   const messages = file && existsSync(file) ? parseJson(readFileSync(file, 'utf8')) : undefined;
   const result = (Array.isArray(messages) ? messages.find((m: { type?: unknown } | null) => m?.type === 'result') : undefined) as
     | { subtype?: unknown; is_error?: unknown; result?: unknown }
     | undefined;
   const text = result?.subtype === 'success' && !result.is_error && typeof result.result === 'string' ? result.result.trim() : '';
+  if (trace !== null) {
+    const findings = text === '' ? '' : `\n<details><summary>Result</summary>\n\n${text}\n\n</details>\n`;
+    stepSummary(env, io, `${renderTrace(trace, '/code-review trace')}${findings}`);
+  }
   if (text === '') {
     io.stdout('::warning::Cura: the /code-review pass returned no result, so the review runs without its findings.');
     return;

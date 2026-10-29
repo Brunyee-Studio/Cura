@@ -840,7 +840,7 @@ describe('code-review', () => {
     writeFileSync(file, JSON.stringify(messages));
     return file;
   };
-  const env = (file: string) => ({ CURA_CTX: ctx, CURA_CODE_REVIEW_EXECUTION_FILE: file });
+  const env = (file: string) => ({ CURA_CTX: ctx, CURA_CODE_REVIEW_EXECUTION_FILE: file, GITHUB_STEP_SUMMARY: summaryFile });
 
   test("saves the pass's final result for the lead", async () => {
     const file = writeExecution([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, result: '1. `src/a.ts:3`: skips the first item.' }]);
@@ -849,6 +849,28 @@ describe('code-review', () => {
     expect(code()).toBe(0);
     expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toBe('1. `src/a.ts:3`: skips the first item.\n');
     expect(text()).not.toContain('::warning::');
+  });
+
+  test('writes its trace, denials and result to the job summary', async () => {
+    const file = writeExecution([
+      { type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        total_cost_usd: 0.04,
+        result: '1. `src/a.ts:3`: skips the first item.',
+        permission_denials: [{ tool_name: 'Bash', tool_input: { command: 'gh pr diff 7' } }],
+      },
+    ]);
+    const { io } = makeIo();
+    await main(['code-review'], env(file), io);
+    const summary = readFileSync(summaryFile, 'utf8');
+    expect(summary).toContain('### Cura: /code-review trace');
+    expect(summary).toContain('`claude-sonnet-5-5`');
+    expect(summary).toContain('- Permission denials: 1');
+    expect(summary).toContain('gh pr diff 7');
+    expect(summary).toContain('<details><summary>Result</summary>\n\n1. `src/a.ts:3`: skips the first item.');
   });
 
   test.each([

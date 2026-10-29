@@ -40,7 +40,7 @@ The summary comment is edited in place on every run. It shows:
 
 The next push is reviewed incrementally from that SHA when it is an ancestor of the new head. If the review fails, the summary says so and links the run.
 
-The job summary (not the PR) gets a **Review trace** read from claude-code-action's execution file: the model, turns, duration and cost; the subagents dispatched, by type; the scope plan checks and whether the fallback plan was used; and each denied tool call with its input, trimmed. The run logs a warning when the verifier never ran although the review had candidates or open threads, or when no scope reviewer ran on a diff too large to review directly.
+The job summary (not the PR) gets a **Review trace** read from claude-code-action's execution file: the model, turns, duration and cost; the subagents dispatched, by type; the scope plan checks and whether the fallback plan was used; and each denied tool call with its input, trimmed. With the `/code-review` pass on, a **/code-review trace** of that session follows, with its result. The run logs a warning when the verifier never ran although the review had candidates or open threads, or when no scope reviewer ran on a diff too large to review directly.
 
 ## Quick start
 
