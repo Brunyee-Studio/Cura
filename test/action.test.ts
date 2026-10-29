@@ -95,6 +95,35 @@ describe('action.yml', () => {
     expect(steps()[setter]!.text).toContain('echo "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" >> "$GITHUB_ENV"');
   });
 
+  describe('/code-review pass', () => {
+    test('runs after background tasks are off and is saved before the review step', () => {
+      const keys = steps().map((s) => s.key);
+      const setter = steps().findIndex((s) => s.text.includes('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'));
+      const save = keys.indexOf('Save /code-review findings');
+      expect(setter).toBeLessThan(keys.indexOf('code_review'));
+      expect(save).toBe(keys.indexOf('code_review') + 1);
+      expect(save).toBeLessThan(keys.indexOf('claude'));
+    });
+
+    test('runs only when enabled, and its failure does not stop the review', () => {
+      const condition = "if: steps.context.outputs.skip_agent == 'false' && inputs.code_review != 'off'";
+      expect(step('code_review')).toContain(condition);
+      expect(step('code_review')).toMatch(/^ {6}continue-on-error: true$/m);
+      expect(step('Save /code-review findings')).toContain(condition);
+      expect(action).toMatch(/^ {2}code_review:\n(?: {4}.*\n)* {4}default: 'off'$/m);
+    });
+
+    test('takes its prompt and tool rules from the prompt step, and saves the result from its execution file', () => {
+      expect(step('prompt')).toContain('CURA_CODE_REVIEW: ${{ inputs.code_review }}');
+      expect(step('code_review')).toContain('prompt: ${{ steps.prompt.outputs.code_review_prompt }}');
+      expect(step('code_review')).toContain('claude_args: ${{ steps.prompt.outputs.code_review_args }}');
+      expect(step('code_review')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
+      const save = step('Save /code-review findings');
+      expect(save).toContain('CURA_CODE_REVIEW_EXECUTION_FILE: ${{ steps.code_review.outputs.execution_file }}');
+      expect(save).toContain('node "$GITHUB_ACTION_PATH/src/cli.ts" code-review');
+    });
+  });
+
   test('passes allowed_bots through to claude-code-action', () => {
     expect(step('claude')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
   });
@@ -162,7 +191,7 @@ describe('action.yml', () => {
 
   test('pins third-party actions by commit SHA', () => {
     const uses = [...action.matchAll(/uses: (\S+)/g)].map((m) => m[1]!);
-    expect(uses).toHaveLength(2);
+    expect(uses).toHaveLength(3);
     for (const ref of uses) expect(ref).toMatch(/@[0-9a-f]{40}$/);
     expect(uses).toContain('anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829');
   });

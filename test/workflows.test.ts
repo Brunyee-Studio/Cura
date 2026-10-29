@@ -188,6 +188,7 @@ describe('review.yml', () => {
       'config',
       'model',
       'fail_on',
+      'code_review',
       'max_files_per_scope',
       'max_lines_per_scope',
       'timeout_minutes',

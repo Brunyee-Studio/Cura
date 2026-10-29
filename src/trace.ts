@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { allowsDirectReview, DIRECT_REVIEW_MAX_LINES, needsVerifier } from './agents.ts';
+import { allowsDirectReview, CODE_REVIEW_FILE, DIRECT_REVIEW_MAX_LINES, needsVerifier } from './agents.ts';
 
 /** What the lead did during a review, read from claude-code-action's execution file (its SDK message list). */
 export interface ReviewTrace {
@@ -14,6 +14,10 @@ export interface ReviewTrace {
   planChecks: number;
   /** Whether a plan check printed the fallback plan. */
   planFallback: boolean;
+  /** Whether the session read the /code-review pass's findings file. */
+  codeReviewRead: boolean;
+  /** Findings sent to Claude Code's ReportFindings tool, which the /code-review skill reports through. */
+  reportedFindings: unknown[];
 }
 
 export interface PermissionDenial {
@@ -27,7 +31,11 @@ const DENIAL_INPUT_MAX = 120;
 
 type Json = Record<string, unknown>;
 
-/** The trace of an execution file, or null when it is missing or not a message list: the trace is diagnostic only. */
+/**
+ * The trace of an execution file, or null when it is missing or not a message list: the trace is diagnostic only.
+ * A forked task's tool calls are only in its own transcript, so findings it reported (the /code-review skill
+ * runs as one) are read from there.
+ */
 export function readTrace(file: string): ReviewTrace | null {
   let messages: unknown;
   try {
@@ -35,7 +43,34 @@ export function readTrace(file: string): ReviewTrace | null {
   } catch {
     return null;
   }
-  return Array.isArray(messages) ? traceFrom(messages) : null;
+  if (!Array.isArray(messages)) return null;
+  const trace = traceFrom(messages);
+  for (const transcript of taskTranscripts(messages)) trace.reportedFindings.push(...traceFrom(readJsonLines(transcript)).reportedFindings);
+  return trace;
+}
+
+function taskTranscripts(messages: unknown[]): string[] {
+  return messages
+    .filter(isObject)
+    .filter((m) => m.type === 'system' && m.subtype === 'task_notification' && typeof m.output_file === 'string')
+    .map((m) => m.output_file as string);
+}
+
+/** A transcript has one JSON message per line; an unreadable file or line is skipped. */
+function readJsonLines(file: string): unknown[] {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  return text.split('\n').flatMap((line) => {
+    try {
+      return [JSON.parse(line) as unknown];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export function traceFrom(messages: unknown[]): ReviewTrace {
@@ -44,9 +79,13 @@ export function traceFrom(messages: unknown[]): ReviewTrace {
   const result = msgs.find((m) => m.type === 'result');
   const subagents: Record<string, number> = {};
   const planCheckIds = new Set<string>();
+  let codeReviewRead = false;
+  const reportedFindings: unknown[] = [];
 
   for (const block of contentBlocks(msgs, 'assistant', 'tool_use')) {
     const input = isObject(block.input) ? block.input : {};
+    if (block.name === 'Read' && typeof input.file_path === 'string' && input.file_path.endsWith(`/${CODE_REVIEW_FILE}`)) codeReviewRead = true;
+    if (block.name === 'ReportFindings' && Array.isArray(input.findings)) reportedFindings.push(...input.findings);
     if (SUBAGENT_TOOLS.has(String(block.name)) && typeof input.subagent_type === 'string') {
       subagents[input.subagent_type] = (subagents[input.subagent_type] ?? 0) + 1;
     }
@@ -68,12 +107,18 @@ export function traceFrom(messages: unknown[]): ReviewTrace {
       .map((d) => ({ tool: String(d.tool_name), input: d.tool_input })),
     planChecks: planCheckIds.size,
     planFallback,
+    codeReviewRead,
+    reportedFindings,
   };
 }
 
 /** Signs the review skipped a step of the lead's procedure, judged by the same rules the lead prompt states. */
-export function traceWarnings(trace: ReviewTrace, review: { reviewLines: number; candidates: number; openThreads: number }): string[] {
+export function traceWarnings(
+  trace: ReviewTrace,
+  review: { reviewLines: number; candidates: number; openThreads: number; codeReviewSaved?: boolean },
+): string[] {
   const warnings: string[] = [];
+  if (review.codeReviewSaved && !trace.codeReviewRead) warnings.push(`the lead never read ${CODE_REVIEW_FILE}, so the /code-review findings were not used`);
   if (needsVerifier(review) && !trace.subagents.verifier) warnings.push('the verifier never ran, so no finding was verified');
   if (!allowsDirectReview(review.reviewLines) && !trace.subagents['scope-reviewer']) {
     warnings.push(`no scope-reviewer ran although the review has ${review.reviewLines} changed lines (direct review allowed up to ${DIRECT_REVIEW_MAX_LINES})`);
@@ -81,7 +126,7 @@ export function traceWarnings(trace: ReviewTrace, review: { reviewLines: number;
   return warnings;
 }
 
-export function renderTrace(trace: ReviewTrace): string {
+export function renderTrace(trace: ReviewTrace, title = 'review trace'): string {
   const run = [
     trace.model === null ? null : `\`${trace.model}\``,
     trace.turns === null ? null : `${trace.turns} turns`,
@@ -90,11 +135,13 @@ export function renderTrace(trace: ReviewTrace): string {
   ].filter((part) => part !== null);
   const subagents = Object.entries(trace.subagents).map(([type, count]) => `${type} ×${count}`);
   const lines = [
-    '### Cura: review trace',
+    `### Cura: ${title}`,
     '',
     ...(run.length > 0 ? [`- Run: ${run.join(' · ')}`] : []),
     `- Subagents: ${subagents.length > 0 ? subagents.join(', ') : 'none'}`,
     `- Plan checks: ${trace.planChecks}${trace.planFallback ? ' (fallback plan used)' : ''}`,
+    ...(trace.codeReviewRead ? [`- Read ${CODE_REVIEW_FILE}: yes`] : []),
+    ...(trace.reportedFindings.length > 0 ? [`- Findings reported: ${trace.reportedFindings.length}`] : []),
     `- Permission denials: ${trace.denials.length}`,
     ...trace.denials.map((d) => `  - \`${d.tool}\` \`${trimInput(d.input)}\``),
   ];

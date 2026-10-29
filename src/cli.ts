@@ -3,7 +3,18 @@ import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { allowedTools, allowsDirectReview, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
+import {
+  allowedTools,
+  allowsDirectReview,
+  buildAgents,
+  CODE_REVIEW_FILE,
+  codeReviewAllowedTools,
+  codeReviewDisallowedTools,
+  codeReviewPrompt,
+  disallowedTools,
+  DRAFTS_DIR,
+  renderLeadPrompt,
+} from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
@@ -12,7 +23,7 @@ import { checkPlan, fallbackPlan } from './plan.ts';
 import { publish, publishFailure, type UnresolvedThread } from './publish.ts';
 import { rescore, type RescoreResult } from './rescore.ts';
 import { loadSchema } from './schema.ts';
-import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings } from './trace.ts';
+import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings, type ReviewTrace } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
 
 type Env = NodeJS.ProcessEnv;
@@ -49,6 +60,7 @@ commands:
   install                       resolve or download the ocr binary
   context                       gather PR context into $CURA_CTX
   prompt                        render the lead prompt, agents and tool rules
+  code-review                   save the /code-review pass's result ($CURA_CODE_REVIEW_EXECUTION_FILE) for the lead
   check [--ctx <dir>] [--plan]  validate the review draft (or, with --plan, the scope plan) in <dir>/drafts/
   publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
   rescore                       recompute the summary's score from the open Cura threads (no model)
@@ -96,6 +108,8 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
       return context(env, io, d);
     case 'prompt':
       return prompt(env, io);
+    case 'code-review':
+      return saveCodeReview(env, io);
     case 'check':
       return check(args, env, io);
     case 'publish':
@@ -204,6 +218,7 @@ function prompt(env: Env, io: Io): void {
     maxFiles,
     maxLines,
     directReview: allowsDirectReview(state.reviewLines),
+    codeReview: (env.CURA_CODE_REVIEW || 'off') !== 'off',
   });
   const model = env.CURA_MODEL || undefined;
   const agentsFile = join(ctxDir, 'agents.json');
@@ -228,6 +243,53 @@ function prompt(env: Env, io: Io): void {
     agents_file: agentsFile,
     claude_args: claudeArgs.map(shellQuote).join(' '),
   });
+
+  const level = env.CURA_CODE_REVIEW || 'off';
+  if (level === 'off') return;
+  const workspace = env.GITHUB_WORKSPACE || process.cwd();
+  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools(workspace), '--disallowedTools', codeReviewDisallowedTools()];
+  if (model) codeReviewArgs.push('--model', model);
+  setOutputs(env, io, {
+    code_review_prompt: codeReviewPrompt({ level, base: state.base, mode: state.mode, prevSha: state.prevSha }),
+    code_review_args: codeReviewArgs.map(shellQuote).join(' '),
+  });
+}
+
+// ── code-review ──────────────────────────────────────────────────────────────
+
+/** The lead reads it as `code-review.md`; a failed pass only costs those leads, so it warns and the review goes on. */
+function saveCodeReview(env: Env, io: Io): void {
+  const ctxDir = ctxFromEnv(env);
+  const file = env.CURA_CODE_REVIEW_EXECUTION_FILE;
+  const trace = file ? readTrace(file) : null;
+  const messages = file && existsSync(file) ? parseJson(readFileSync(file, 'utf8')) : undefined;
+  const result = (Array.isArray(messages) ? messages.find((m: { type?: unknown } | null) => m?.type === 'result') : undefined) as
+    | { subtype?: unknown; is_error?: unknown; result?: unknown }
+    | undefined;
+  const text = result?.subtype === 'success' && !result.is_error && typeof result.result === 'string' ? result.result.trim() : '';
+  // The skill can report its findings through ReportFindings and leave only a summary in its final text.
+  const reported = trace?.reportedFindings ?? [];
+  const notes = [
+    ...(text === '' ? [] : [text]),
+    ...(reported.length === 0 ? [] : [`## Reported findings\n\n\`\`\`json\n${JSON.stringify(reported, null, 2)}\n\`\`\``]),
+  ].join('\n\n');
+  if (trace !== null) stepSummary(env, io, renderCodeReviewTrace(trace, notes));
+  if (notes === '') {
+    io.stdout('::warning::Cura: the /code-review pass returned no result, so the review runs without its findings.');
+    return;
+  }
+  writeFileSync(join(ctxDir, CODE_REVIEW_FILE), `${notes}\n`);
+}
+
+// The trace trims each denial to one line; the pass picks its own commands, so they are listed in full too.
+function renderCodeReviewTrace(trace: ReviewTrace, notes: string): string {
+  const details = (summary: string, body: string) => `\n<details><summary>${summary}</summary>\n\n${body}\n\n</details>\n`;
+  const denials = trace.denials.map((d) => JSON.stringify(d)).join('\n');
+  return [
+    renderTrace(trace, '/code-review trace'),
+    denials === '' ? '' : details('Denied tool calls', `\`\`\`json\n${denials}\n\`\`\``),
+    notes === '' ? '' : details('Result', notes),
+  ].join('');
 }
 
 /**
@@ -428,7 +490,10 @@ function reportTrace(env: Env, io: Io, file: string, state: RunState, review: un
   const { findings, discarded } = (review ?? {}) as Partial<Review>;
   const candidates = (Array.isArray(findings) ? findings.length : 0) + (Array.isArray(discarded) ? discarded.length : 0);
   const openThreads = readJson<Thread[]>(ctxDir, 'threads.json').filter((t) => !t.isResolved).length;
-  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads })) io.stdout(`::warning::Cura: ${warning}`);
+  const codeReviewSaved = existsSync(join(ctxDir, CODE_REVIEW_FILE));
+  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads, codeReviewSaved })) {
+    io.stdout(`::warning::Cura: ${warning}`);
+  }
 }
 
 function parseJson(text: string): unknown {

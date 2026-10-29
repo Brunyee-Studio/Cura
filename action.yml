@@ -46,6 +46,12 @@ inputs:
     description: SHA-256 of the OpenCodeReview asset for this runner. Required with `ocr_version`; Cura pins the hashes of its own version.
     required: false
     default: ''
+  code_review:
+    description: >-
+      Run Claude Code's built-in `/code-review` over the same diff first, at this level (`low`, `medium` or `high`),
+      and hand its findings to the review as candidates to verify; `off` skips it. It is a second Claude session.
+    required: false
+    default: 'off'
   max_files_per_scope:
     description: Chunk cap — files per review scope.
     required: false
@@ -202,6 +208,7 @@ runs:
         CURA_CTX: ${{ runner.temp }}/cura
         CURA_PR: ${{ steps.pr.outputs.number }}
         CURA_MODEL: ${{ inputs.model }}
+        CURA_CODE_REVIEW: ${{ inputs.code_review }}
       # Under `claude -p` a subagent runs in the background by default, and the
       # lead returned its review while its reviewers were still running. With
       # background tasks off each subagent runs in the foreground: it still gets
@@ -211,6 +218,32 @@ runs:
       run: |
         node "$GITHUB_ACTION_PATH/src/cli.ts" prompt
         echo "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" >> "$GITHUB_ENV"
+
+    # Claude Code's built-in /code-review skill over the diff the lead reviews.
+    # It reads untrusted PR content too, so it gets read-only git and file tools
+    # and no GitHub tools (see src/agents.ts); its findings reach the lead as
+    # unverified candidates. A failed pass only warns: the review runs without it.
+    - name: Claude Code /code-review
+      id: code_review
+      if: steps.context.outputs.skip_agent == 'false' && inputs.code_review != 'off'
+      continue-on-error: true
+      uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1.0.236
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        github_token: ${{ inputs.github_token }}
+        prompt: ${{ steps.prompt.outputs.code_review_prompt }}
+        claude_args: ${{ steps.prompt.outputs.code_review_args }}
+        allowed_bots: ${{ inputs.allowed_bots }}
+
+    # Saved before the review runs, which writes its own execution file.
+    - name: Save /code-review findings
+      if: steps.context.outputs.skip_agent == 'false' && inputs.code_review != 'off'
+      shell: bash
+      env:
+        CURA_CTX: ${{ runner.temp }}/cura
+        CURA_CODE_REVIEW_EXECUTION_FILE: ${{ steps.code_review.outputs.execution_file }}
+      run: |
+        node "$GITHUB_ACTION_PATH/src/cli.ts" code-review
 
     # The session reads untrusted PR content, so it gets no GitHub tools and
     # Bash is pinned to the exact command forms the prompt uses (see
