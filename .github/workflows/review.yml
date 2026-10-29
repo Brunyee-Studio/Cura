@@ -30,6 +30,10 @@ on:
         description: Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`).
         type: string
         default: none
+      code_review:
+        description: Level of a Claude Code `/code-review` pass whose findings the review verifies (`off`, `low`, `medium` or `high`).
+        type: string
+        default: 'off'
       max_files_per_scope:
         description: Chunk cap — files per review scope.
         type: number
@@ -157,6 +161,7 @@ jobs:
           config: ${{ inputs.config }}
           model: ${{ inputs.model }}
           fail_on: ${{ inputs.fail_on }}
+          code_review: ${{ inputs.code_review }}
           max_files_per_scope: ${{ inputs.max_files_per_scope }}
           max_lines_per_scope: ${{ inputs.max_lines_per_scope }}
           allowed_bots: ${{ inputs.allowed_bots }}

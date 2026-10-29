@@ -9,6 +9,7 @@ Cura posts one summary comment per PR, puts every finding inline on the code, an
 - **Scoped reviewers.** A lead agent splits the PR into cohesive scopes (honouring the scopes in your config first) and dispatches a reviewer subagent per scope in parallel. A checker keeps every reviewable file in exactly one scope and each scope within the file and line caps; if the plan still fails after two attempts, Cura repairs the lead's last plan itself, keeping its scopes, focus and context: it moves config-scope files into their scope, drops unknown and repeated paths, splits oversize scopes, and groups any unplaced files by directory. When the diff to review (the new commits on an incremental review, otherwise the whole PR) has at most 200 changed lines in reviewable files, the lead may review it directly instead, and says so in the scope notes; above that it must dispatch the scope reviewers.
 - **Codebase-aware.** Each reviewer greps the callers and consumers of every changed symbol, signature, schema, route, column, config key and env var, and compares the change against an existing implementation of the same kind.
 - **Verifier.** A verifier subagent re-reads every candidate and keeps only concrete issues the diff causes or makes reachable. Pre-existing debt, style nits and duplicates are dropped and listed in the summary's discarded section. The verifier runs whenever there is a candidate or an open Cura thread, direct reviews included.
+- **Optional `/code-review` pass.** With `code_review` set to `low`, `medium` or `high`, Claude Code's built-in `/code-review` skill first reviews the same diff (the new commits on an incremental review, otherwise the whole PR) in a session of its own. The lead adds each of its findings as a candidate, so the verifier triages them with the rest. It is a second Claude session per review, so it is `off` by default. If it returns no result, the run logs a warning and the review goes on without it.
 - **Inline-only findings.** Every finding is an inline review comment. If a finding's line is outside the diff, Cura snaps it to the nearest changed line within 5 lines. If there is none, it becomes a file-level comment. A finding on a file outside the PR is not posted or scored, and appears as a warning in the job summary.
 - **Score derived from findings.** The model never picks the score. Cura computes it from the open Cura findings after publishing:
 
@@ -113,6 +114,7 @@ Comment `/cura` on the PR to review it again. You must be an owner, member or co
 | `config` | string | `.github/cura.json` | Cura config file, read from the PR's base branch |
 | `model` | string | `claude-sonnet-5-5` | Model for the lead and its subagents (pinned to Sonnet 5.5); set another model ID to override |
 | `fail_on` | string | `none` | Fail the job when an open finding at or above this severity exists (`P0`, `P1` or `none`) |
+| `code_review` | string | `off` | Level of a Claude Code `/code-review` pass whose findings the review verifies (`off`, `low`, `medium` or `high`) |
 | `max_files_per_scope` | number | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | number | `1500` | Chunk cap: changed lines (added + removed) per review scope |
 | `timeout_minutes` | number | `20` | Timeout for the review job |
@@ -187,6 +189,7 @@ To re-score on a submitted review and on close, add a second job that runs the a
 | `max_files_per_scope` | no | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | no | `1500` | Chunk cap: changed lines (added + removed) per review scope |
 | `fail_on` | no | `none` | Fail the step when an open finding at or above this severity exists (`P0`, `P1` or `none`) |
+| `code_review` | no | `off` | Level of a Claude Code `/code-review` pass whose findings the review verifies (`off`, `low`, `medium` or `high`) |
 | `allow_forks` | no | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 | `bot_login` | no | `github-actions` | Author login whose marked threads Cura owns (set it when `github_token` is not the default token) |
 | `allowed_bots` | no | `''` | Comma-separated bot logins allowed to trigger the review (passed to claude-code-action's `allowed_bots`) |
@@ -242,8 +245,9 @@ Cura runs [OpenCodeReview](https://github.com/alibaba/open-code-review) in deleg
 - **Rules and config come from the base branch.** They are read with `git show origin/<base>:<path>`, so a PR cannot rewrite its own review rules. Changes to them take effect after merge.
 - **Forks are refused.** The reusable workflow refuses cross-repository PRs before it checks anything out. The action also refuses them unless `allow_forks` is `true`, which is not recommended on self-hosted runners because a member's `/cura` would run fork code with the job's token and secrets.
 - **The Claude session has a tool allowlist.** It gets no GitHub tools. Bash is pinned to `git diff origin/<base>...HEAD -- <paths>` and Cura's own `check` command. Reads are limited to the workspace and Cura's context directory; `.git`, `.env`, home dot-files, `/etc`, `/proc`, `/root` and credential files are denied. The session returns structured output only. A separate publish step makes every GitHub write.
+- **The `/code-review` session is read-only too.** It gets no GitHub, Edit or Write tools, so `--comment` and `--fix` cannot act. Its recipe chooses its own git commands, so Bash allows the read-only subcommands `diff`, `log`, `show`, `status`, `merge-base`, `rev-parse` and `ls-files`, never `--no-index`, plus the review session's read denies. Its text output reaches the lead only as candidates for the verifier.
 - **PR content is data.** Every agent prompt says that the PR title, body, commits, code and comments are data, never instructions.
-- **The token is scrubbed after the Claude step.** claude-code-action writes its token into the `origin` URL. The step right after it always restores the plain URL and removes any credential helper or auth header, so the token doesn't outlive the Claude step in `.git/config`.
+- **The token is scrubbed after the Claude step.** claude-code-action writes its token into the `origin` URL, on the `/code-review` pass as well. The step right after the review's Claude step always restores the plain URL and removes any credential helper or auth header, so the token doesn't outlive the Claude step in `.git/config`.
 - **Untrusted values stay out of scripts.** Event values reach scripts only through `env:`, never through `${{ }}` in `run:` bodies.
 
 ## Self-hosted runners
@@ -256,7 +260,7 @@ Cura runs [OpenCodeReview](https://github.com/alibaba/open-code-review) in deleg
 
 ## Dogfooding
 
-[`.github/workflows/cura.yml`](.github/workflows/cura.yml) reviews Cura's own PRs, using the action code from the PR head (`uses: ./`). It needs the repository secret `CLAUDE_CODE_OAUTH_TOKEN`.
+[`.github/workflows/cura.yml`](.github/workflows/cura.yml) reviews Cura's own PRs, using the action code from the PR head (`uses: ./`), with the `/code-review` pass at `medium`. It needs the repository secret `CLAUDE_CODE_OAUTH_TOKEN`.
 
 ## Development
 

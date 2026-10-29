@@ -133,6 +133,30 @@ export function allowedTools(vars: { base: string; ctxDir: string; curaDir: stri
   ].join(',');
 }
 
+/** Claude Code `/code-review` levels Cura runs; `max` and `ultra` start many reviewers or a cloud review. */
+export const CODE_REVIEW_LEVELS = ['low', 'medium', 'high'];
+
+/** The `/code-review` pass covers the diff the lead reviews: the new commits in incremental mode, else the whole PR. */
+export function codeReviewPrompt(vars: { level: string; base: string; mode: string; prevSha: string | null }): string {
+  if (!CODE_REVIEW_LEVELS.includes(vars.level)) throw new Error(`code_review must be off, low, medium or high (got ${JSON.stringify(vars.level)})`);
+  assertSafeRuleValues({ base: vars.base });
+  const from = vars.mode === 'incremental' && vars.prevSha ? vars.prevSha : `origin/${vars.base}`;
+  return `/code-review ${vars.level} ${from}...HEAD`;
+}
+
+// The /code-review pass also reads untrusted PR content. Its recipe picks its own
+// git commands, so it gets read-only git subcommands instead of the lead's one
+// pinned form, and no write or GitHub tools: its findings are text for the lead.
+export function codeReviewAllowedTools(): string {
+  const git = ['diff', 'log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'].map((cmd) => `Bash(git ${cmd}:*)`);
+  return ['Read(./**)', 'Grep', 'Glob', 'Agent', 'Task', ...git].join(',');
+}
+
+// `git diff --no-index` diffs any two paths, so it could read files outside the repo.
+export function codeReviewDisallowedTools(): string {
+  return [disallowedTools(), 'Bash(git *--no-index*)'].join(',');
+}
+
 // Blocks ocr's file-reading flags, git's `--output`, and credential files.
 export function disallowedTools(): string {
   return [

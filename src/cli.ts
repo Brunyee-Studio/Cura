@@ -3,7 +3,17 @@ import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { allowedTools, allowsDirectReview, buildAgents, disallowedTools, DRAFTS_DIR, renderLeadPrompt } from './agents.ts';
+import {
+  allowedTools,
+  allowsDirectReview,
+  buildAgents,
+  codeReviewAllowedTools,
+  codeReviewDisallowedTools,
+  codeReviewPrompt,
+  disallowedTools,
+  DRAFTS_DIR,
+  renderLeadPrompt,
+} from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
 import { createGitHub, type GitHub, type GitHubOptions } from './github.ts';
@@ -49,6 +59,7 @@ commands:
   install                       resolve or download the ocr binary
   context                       gather PR context into $CURA_CTX
   prompt                        render the lead prompt, agents and tool rules
+  code-review                   save the /code-review pass's result ($CURA_CODE_REVIEW_EXECUTION_FILE) for the lead
   check [--ctx <dir>] [--plan]  validate the review draft (or, with --plan, the scope plan) in <dir>/drafts/
   publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
   rescore                       recompute the summary's score from the open Cura threads (no model)
@@ -96,6 +107,8 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
       return context(env, io, d);
     case 'prompt':
       return prompt(env, io);
+    case 'code-review':
+      return saveCodeReview(env, io);
     case 'check':
       return check(args, env, io);
     case 'publish':
@@ -228,6 +241,33 @@ function prompt(env: Env, io: Io): void {
     agents_file: agentsFile,
     claude_args: claudeArgs.map(shellQuote).join(' '),
   });
+
+  const level = env.CURA_CODE_REVIEW || 'off';
+  if (level === 'off') return;
+  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools(), '--disallowedTools', codeReviewDisallowedTools()];
+  if (model) codeReviewArgs.push('--model', model);
+  setOutputs(env, io, {
+    code_review_prompt: codeReviewPrompt({ level, base: state.base, mode: state.mode, prevSha: state.prevSha }),
+    code_review_args: codeReviewArgs.map(shellQuote).join(' '),
+  });
+}
+
+// ── code-review ──────────────────────────────────────────────────────────────
+
+/** The lead reads it as `code-review.md`; a failed pass only costs those leads, so it warns and the review goes on. */
+function saveCodeReview(env: Env, io: Io): void {
+  const ctxDir = ctxFromEnv(env);
+  const file = env.CURA_CODE_REVIEW_EXECUTION_FILE;
+  const messages = file && existsSync(file) ? parseJson(readFileSync(file, 'utf8')) : undefined;
+  const result = (Array.isArray(messages) ? messages.find((m: { type?: unknown } | null) => m?.type === 'result') : undefined) as
+    | { subtype?: unknown; is_error?: unknown; result?: unknown }
+    | undefined;
+  const text = result?.subtype === 'success' && !result.is_error && typeof result.result === 'string' ? result.result.trim() : '';
+  if (text === '') {
+    io.stdout('::warning::Cura: the /code-review pass returned no result, so the review runs without its findings.');
+    return;
+  }
+  writeFileSync(join(ctxDir, 'code-review.md'), `${text}\n`);
 }
 
 /**
