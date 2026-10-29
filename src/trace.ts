@@ -31,7 +31,11 @@ const DENIAL_INPUT_MAX = 120;
 
 type Json = Record<string, unknown>;
 
-/** The trace of an execution file, or null when it is missing or not a message list: the trace is diagnostic only. */
+/**
+ * The trace of an execution file, or null when it is missing or not a message list: the trace is diagnostic only.
+ * A forked task's tool calls are only in its own transcript, so findings it reported (the /code-review skill
+ * runs as one) are read from there.
+ */
 export function readTrace(file: string): ReviewTrace | null {
   let messages: unknown;
   try {
@@ -39,7 +43,34 @@ export function readTrace(file: string): ReviewTrace | null {
   } catch {
     return null;
   }
-  return Array.isArray(messages) ? traceFrom(messages) : null;
+  if (!Array.isArray(messages)) return null;
+  const trace = traceFrom(messages);
+  for (const transcript of taskTranscripts(messages)) trace.reportedFindings.push(...traceFrom(readJsonLines(transcript)).reportedFindings);
+  return trace;
+}
+
+function taskTranscripts(messages: unknown[]): string[] {
+  return messages
+    .filter(isObject)
+    .filter((m) => m.type === 'system' && m.subtype === 'task_notification' && typeof m.output_file === 'string')
+    .map((m) => m.output_file as string);
+}
+
+/** A transcript has one JSON message per line; an unreadable file or line is skipped. */
+function readJsonLines(file: string): unknown[] {
+  let text: string;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return [];
+  }
+  return text.split('\n').flatMap((line) => {
+    try {
+      return [JSON.parse(line) as unknown];
+    } catch {
+      return [];
+    }
+  });
 }
 
 export function traceFrom(messages: unknown[]): ReviewTrace {

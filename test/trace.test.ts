@@ -52,6 +52,30 @@ describe('readTrace', () => {
     });
   });
 
+  // The /code-review skill runs as a forked task: its tool calls are only in the task's own transcript.
+  describe("findings reported in a forked task's transcript", () => {
+    const finding = { file: 'src/a.ts', line: 3, summary: 'skips the first item', failure_scenario: 'a one-item cart totals 0' };
+    const notification = (outputFile: string) => ({ type: 'system', subtype: 'task_notification', status: 'completed', output_file: outputFile });
+    const writeExecution = (messages: unknown[]) => {
+      const file = join(root, 'execution.json');
+      writeFileSync(file, JSON.stringify(messages));
+      return file;
+    };
+
+    test('are read from the transcript the task notification names', () => {
+      const transcript = join(root, 'agent.jsonl');
+      const lines = [{ type: 'user', message: { content: 'Review target' } }, toolUse('r', 'ReportFindings', { findings: [finding], level: 'medium' })];
+      writeFileSync(transcript, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n{not json\n`);
+      const t = readTrace(writeExecution([notification(transcript), { type: 'result', subtype: 'success' }]));
+      expect(t!.reportedFindings).toEqual([finding]);
+      expect(t!.subagents).toEqual({});
+    });
+
+    test('a missing transcript reports nothing', () => {
+      expect(readTrace(writeExecution([notification(join(root, 'missing.jsonl'))]))!.reportedFindings).toEqual([]);
+    });
+  });
+
   test.each([
     ['a missing file', null],
     ['invalid JSON', '{not json'],
