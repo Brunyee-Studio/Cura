@@ -798,7 +798,14 @@ describe('prompt', () => {
   });
 
   describe('/code-review pass', () => {
-    const env = (over: Record<string, string> = {}) => ({ CURA_CTX: ctx, GITHUB_OUTPUT: outputFile, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7', ...over });
+    const env = (over: Record<string, string> = {}) => ({
+      CURA_CTX: ctx,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_REPOSITORY: 'o/r',
+      GITHUB_WORKSPACE: '/home/runner/work/o/r',
+      CURA_PR: '7',
+      ...over,
+    });
     const value = (name: string) => outputs().split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1);
 
     test('emits no /code-review outputs when it is off or unset', async () => {
@@ -821,7 +828,7 @@ describe('prompt', () => {
       expect(value('code_review_prompt')).toBe('/code-review medium origin/main...HEAD');
       expect(parseShell(value('code_review_args')!)).toEqual([
         '--allowedTools',
-        codeReviewAllowedTools(),
+        codeReviewAllowedTools('/home/runner/work/o/r'),
         '--disallowedTools',
         codeReviewDisallowedTools(),
         '--model',

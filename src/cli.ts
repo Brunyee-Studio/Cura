@@ -245,7 +245,8 @@ function prompt(env: Env, io: Io): void {
 
   const level = env.CURA_CODE_REVIEW || 'off';
   if (level === 'off') return;
-  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools(), '--disallowedTools', codeReviewDisallowedTools()];
+  const workspace = env.GITHUB_WORKSPACE || process.cwd();
+  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools(workspace), '--disallowedTools', codeReviewDisallowedTools()];
   if (model) codeReviewArgs.push('--model', model);
   setOutputs(env, io, {
     code_review_prompt: codeReviewPrompt({ level, base: state.base, mode: state.mode, prevSha: state.prevSha }),

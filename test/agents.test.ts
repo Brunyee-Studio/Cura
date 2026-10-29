@@ -296,23 +296,23 @@ describe('codeReviewPrompt', () => {
 });
 
 describe('codeReviewAllowedTools', () => {
-  const entries = codeReviewAllowedTools().split(',');
+  const entries = codeReviewAllowedTools('/home/runner/work/o/r').split(',');
+  const subcommands = ['diff', 'log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'];
 
-  test('grants read-only file tools, subagents and read-only git subcommands', () => {
+  test('grants read-only file tools, subagents and read-only git subcommands, also as `git -C <workspace>`', () => {
     expect(entries).toEqual([
       'Read(./**)',
       'Grep',
       'Glob',
       'Agent',
       'Task',
-      'Bash(git diff:*)',
-      'Bash(git log:*)',
-      'Bash(git show:*)',
-      'Bash(git status:*)',
-      'Bash(git merge-base:*)',
-      'Bash(git rev-parse:*)',
-      'Bash(git ls-files:*)',
+      ...subcommands.map((cmd) => `Bash(git ${cmd}:*)`),
+      ...subcommands.map((cmd) => `Bash(git -C /home/runner/work/o/r ${cmd}:*)`),
     ]);
+  });
+
+  test.each(['/home/runner/work/o/r,Bash', '/home/runner/work/o r', 'work/o/r'])('rejects workspace %j', (workspace) => {
+    expect(() => codeReviewAllowedTools(workspace)).toThrow(/workspace/);
   });
 
   test('grants no writes, no GitHub tools and no generic bash', () => {
