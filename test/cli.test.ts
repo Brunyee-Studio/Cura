@@ -816,6 +816,7 @@ describe('prompt', () => {
         await main(['prompt'], env(over), io);
         expect(code()).toBe(0);
         expect(value('code_review_prompt')).toBeUndefined();
+        expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('CODE REVIEW PASS: off');
         expect(value('code_review_args')).toBeUndefined();
       }
     });
@@ -826,6 +827,7 @@ describe('prompt', () => {
       await main(['prompt'], env({ CURA_CODE_REVIEW: 'medium', CURA_MODEL: 'claude-sonnet-5-5' }), io);
       expect(code()).toBe(0);
       expect(value('code_review_prompt')).toBe('/code-review medium origin/main...HEAD');
+      expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('CODE REVIEW PASS: on');
       expect(parseShell(value('code_review_args')!)).toEqual([
         '--allowedTools',
         codeReviewAllowedTools('/home/runner/work/o/r'),

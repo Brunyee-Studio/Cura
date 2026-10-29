@@ -14,6 +14,7 @@ export interface LeadPromptVars {
   maxFiles: number;
   maxLines: number;
   directReview: boolean;
+  codeReview: boolean;
 }
 
 export interface AgentDefinition {
@@ -85,6 +86,7 @@ export function renderLeadPrompt(vars: LeadPromptVars): string {
     maxFiles: String(vars.maxFiles),
     maxLines: String(vars.maxLines),
     directReview: vars.directReview ? 'allowed' : 'not allowed',
+    codeReview: vars.codeReview ? 'on' : 'off',
   });
 }
 

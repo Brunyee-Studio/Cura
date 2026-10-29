@@ -218,6 +218,7 @@ function prompt(env: Env, io: Io): void {
     maxFiles,
     maxLines,
     directReview: allowsDirectReview(state.reviewLines),
+    codeReview: (env.CURA_CODE_REVIEW || 'off') !== 'off',
   });
   const model = env.CURA_MODEL || undefined;
   const agentsFile = join(ctxDir, 'agents.json');
