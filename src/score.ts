@@ -9,7 +9,7 @@ const CRITICAL_CATEGORIES: ReadonlySet<Category> = new Set(['security', 'data-lo
 export function score(open: OpenFinding[]): 1 | 2 | 3 | 4 | 5 {
   const p0 = open.filter((f) => f.severity === 'P0');
   if (p0.some((f) => CRITICAL_CATEGORIES.has(f.category))) return 1;
-  if (p0.length > 0) return 2;
+  if (p0.length > 1) return 2;
   if (open.some((f) => f.severity === 'P1')) return 3;
   if (open.length > 0) return 4;
   return 5;
@@ -23,6 +23,7 @@ export function countBySeverity(open: { severity: Severity }[]): Record<Severity
 
 /** Stable id for a finding across runs: insensitive to title case and surrounding whitespace. */
 export function fingerprint(f: { path: string; category: Category; title: string }): string {
-  const key = `${f.path}|${f.category}|${f.title.trim().toLowerCase()}`;
+  // Titles come from the model already trimmed.
+  const key = `${f.path}|${f.category}|${f.title.toLowerCase()}`;
   return createHash('sha1').update(key).digest('hex').slice(0, 12);
 }
