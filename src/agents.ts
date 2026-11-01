@@ -14,6 +14,7 @@ export interface LeadPromptVars {
   maxFiles: number;
   maxLines: number;
   directReview: boolean;
+  codeReview: boolean;
 }
 
 export interface AgentDefinition {
@@ -41,6 +42,9 @@ export function needsVerifier(work: { candidates: number; openThreads: number })
 /** Subdirectory of the context dir the lead writes its drafts to for the checker. */
 export const DRAFTS_DIR = 'drafts';
 
+/** File in the context dir that holds the /code-review pass's findings for the lead. */
+export const CODE_REVIEW_FILE = 'code-review.md';
+
 const PLACEHOLDER = /\{\{\s*(\w+)\s*\}\}/g;
 
 function readTemplate(name: string): string {
@@ -61,12 +65,12 @@ const UNSAFE_DIR_CHARS = /[,()*\s]/;
 
 // These values are interpolated into comma-joined permission rules; a branch
 // such as `x),Bash,Read(` is a valid git ref and would otherwise grant bare Bash.
-export function assertSafeRuleValues(vars: { base?: string; ctxDir?: string; curaDir?: string }): void {
-  const { base, ctxDir, curaDir } = vars;
+export function assertSafeRuleValues(vars: { base?: string; ctxDir?: string; curaDir?: string; workspace?: string }): void {
+  const { base, ctxDir, curaDir, workspace } = vars;
   if (base !== undefined && (!SAFE_BASE.test(base) || base.startsWith('-') || base.includes('..'))) {
     throw new Error(`Unsafe base branch name for tool rules: ${JSON.stringify(base)}`);
   }
-  for (const [name, dir] of [['ctxDir', ctxDir], ['curaDir', curaDir]] as const) {
+  for (const [name, dir] of [['ctxDir', ctxDir], ['curaDir', curaDir], ['workspace', workspace]] as const) {
     if (dir !== undefined && (!isAbsolute(dir) || UNSAFE_DIR_CHARS.test(dir))) {
       throw new Error(`Unsafe ${name} for tool rules: ${JSON.stringify(dir)}`);
     }
@@ -82,6 +86,7 @@ export function renderLeadPrompt(vars: LeadPromptVars): string {
     maxFiles: String(vars.maxFiles),
     maxLines: String(vars.maxLines),
     directReview: vars.directReview ? 'allowed' : 'not allowed',
+    codeReview: vars.codeReview ? 'on' : 'off',
   });
 }
 
@@ -131,6 +136,34 @@ export function allowedTools(vars: { base: string; ctxDir: string; curaDir: stri
     'Agent',
     'Task',
   ].join(',');
+}
+
+/** Claude Code `/code-review` levels Cura runs; `max` and `ultra` start many reviewers or a cloud review. */
+export const CODE_REVIEW_LEVELS = ['low', 'medium', 'high'];
+
+/** The `/code-review` pass covers the diff the lead reviews: the new commits in incremental mode, else the whole PR. */
+export function codeReviewPrompt(vars: { level: string; base: string; mode: string; prevSha: string | null }): string {
+  if (!CODE_REVIEW_LEVELS.includes(vars.level)) throw new Error(`code_review must be off, low, medium or high (got ${JSON.stringify(vars.level)})`);
+  assertSafeRuleValues({ base: vars.base });
+  const from = vars.mode === 'incremental' && vars.prevSha ? vars.prevSha : `origin/${vars.base}`;
+  return `/code-review ${vars.level} ${from}...HEAD`;
+}
+
+// The /code-review pass also reads untrusted PR content. Its recipe picks its own
+// git commands, so it gets read-only git subcommands instead of the lead's one
+// pinned form, and no write or GitHub tools: its findings are text for the lead.
+// The recipe also runs them as `git -C <workspace>`, which those rules don't match.
+export function codeReviewAllowedTools(workspace: string): string {
+  assertSafeRuleValues({ workspace });
+  const subcommands = ['diff', 'log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'];
+  const git = subcommands.map((cmd) => `Bash(git ${cmd}:*)`);
+  const gitInWorkspace = subcommands.map((cmd) => `Bash(git -C ${workspace} ${cmd}:*)`);
+  return ['Read(./**)', 'Grep', 'Glob', 'Agent', 'Task', ...git, ...gitInWorkspace].join(',');
+}
+
+// `git diff --no-index` diffs any two paths, so it could read files outside the repo.
+export function codeReviewDisallowedTools(): string {
+  return [disallowedTools(), 'Bash(git *--no-index*)'].join(',');
 }
 
 // Blocks ocr's file-reading flags, git's `--output`, and credential files.

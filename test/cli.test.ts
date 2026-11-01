@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseShell } from 'shell-quote';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { codeReviewAllowedTools, codeReviewDisallowedTools } from '../src/agents.ts';
 import { main, shellQuote, type Deps } from '../src/cli.ts';
 import { GitHubError, type GitHub } from '../src/github.ts';
 import { renderSummary } from '../src/render.ts';
@@ -388,6 +389,16 @@ describe('publish', () => {
       expect(summary()).toContain('Plan checks: 2 (fallback plan used)');
       expect(text()).not.toContain('::warning::');
       expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('review trace');
+    });
+
+    test('warns when the lead never read the saved /code-review findings', async () => {
+      seedCtx();
+      writeFileSync(join(ctx, 'code-review.md'), '1. `src/a.ts:3`: skips the first item.\n');
+      const { gh } = fakeGitHub();
+      const { io, text, code } = makeIo();
+      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution() }), io, { createGitHub: () => gh });
+      expect(code()).toBe(0);
+      expect(text()).toContain('::warning::Cura: the lead never read code-review.md, so the /code-review findings were not used');
     });
 
     test('warns when the verifier never ran on a candidate', async () => {
@@ -786,11 +797,144 @@ describe('prompt', () => {
     expect(line).not.toContain('--model');
   });
 
+  describe('/code-review pass', () => {
+    const env = (over: Record<string, string> = {}) => ({
+      CURA_CTX: ctx,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_REPOSITORY: 'o/r',
+      GITHUB_WORKSPACE: '/home/runner/work/o/r',
+      CURA_PR: '7',
+      ...over,
+    });
+    const value = (name: string) => outputs().split('\n').find((l) => l.startsWith(`${name}=`))?.slice(name.length + 1);
+
+    test('emits no /code-review outputs when it is off or unset', async () => {
+      for (const over of [{}, { CURA_CODE_REVIEW: 'off' }] as Record<string, string>[]) {
+        seedCtx();
+        writeFileSync(outputFile, '');
+        const { io, code } = makeIo();
+        await main(['prompt'], env(over), io);
+        expect(code()).toBe(0);
+        expect(value('code_review_prompt')).toBeUndefined();
+        expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('CODE REVIEW PASS: off');
+        expect(value('code_review_args')).toBeUndefined();
+      }
+    });
+
+    test('emits the /code-review prompt and its read-only tool rules', async () => {
+      seedCtx();
+      const { io, code } = makeIo();
+      await main(['prompt'], env({ CURA_CODE_REVIEW: 'medium', CURA_MODEL: 'claude-sonnet-5-5' }), io);
+      expect(code()).toBe(0);
+      expect(value('code_review_prompt')).toBe('/code-review medium origin/main...HEAD');
+      expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('CODE REVIEW PASS: on');
+      expect(parseShell(value('code_review_args')!)).toEqual([
+        '--allowedTools',
+        codeReviewAllowedTools('/home/runner/work/o/r'),
+        '--disallowedTools',
+        codeReviewDisallowedTools(),
+        '--model',
+        'claude-sonnet-5-5',
+      ]);
+    });
+
+    test('an unsupported level fails the step', async () => {
+      seedCtx();
+      const { io } = makeIo();
+      await expect(main(['prompt'], env({ CURA_CODE_REVIEW: 'ultra' }), io)).rejects.toThrow(/low, medium or high/);
+    });
+  });
+
   test('prints outputs to stdout when GITHUB_OUTPUT is unset', async () => {
     seedCtx();
     const { io, text } = makeIo();
     await main(['prompt'], { CURA_CTX: ctx, GITHUB_REPOSITORY: 'o/r', CURA_PR: '7' }, io);
     expect(text()).toContain(`agents_file=${join(ctx, 'agents.json')}`);
+  });
+});
+
+describe('code-review', () => {
+  const writeExecution = (messages: unknown[]) => {
+    const file = join(root, 'claude-execution-output.json');
+    writeFileSync(file, JSON.stringify(messages));
+    return file;
+  };
+  const env = (file: string) => ({ CURA_CTX: ctx, CURA_CODE_REVIEW_EXECUTION_FILE: file, GITHUB_STEP_SUMMARY: summaryFile });
+
+  test("saves the pass's final result for the lead", async () => {
+    const file = writeExecution([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, result: '1. `src/a.ts:3`: skips the first item.' }]);
+    const { io, code, text } = makeIo();
+    await main(['code-review'], env(file), io);
+    expect(code()).toBe(0);
+    expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toBe('1. `src/a.ts:3`: skips the first item.\n');
+    expect(text()).not.toContain('::warning::');
+  });
+
+  test('saves findings reported through ReportFindings alongside the final text', async () => {
+    const reported = { file: 'src/a.ts', line: 3, summary: 'skips the first item', failure_scenario: 'a one-item cart totals 0' };
+    const file = writeExecution([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r', name: 'ReportFindings', input: { findings: [reported] } }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: 'Reported 1 finding.' },
+    ]);
+    const { io, text } = makeIo();
+    await main(['code-review'], env(file), io);
+    const notes = readFileSync(join(ctx, 'code-review.md'), 'utf8');
+    expect(notes).toMatch(/^Reported 1 finding\.\n\n## Reported findings\n\n```json\n/);
+    expect(JSON.parse(/```json\n([\s\S]*)\n```/.exec(notes)![1]!)).toEqual([reported]);
+    expect(text()).not.toContain('::warning::');
+  });
+
+  test('saves reported findings even when the final text is empty', async () => {
+    const file = writeExecution([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r', name: 'ReportFindings', input: { findings: [{ file: 'src/a.ts', line: 3 }] } }] } },
+      { type: 'result', subtype: 'success', is_error: false, result: '' },
+    ]);
+    const { io } = makeIo();
+    await main(['code-review'], env(file), io);
+    expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toMatch(/^## Reported findings/);
+  });
+
+  test('writes its trace, denials and result to the job summary', async () => {
+    const file = writeExecution([
+      { type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' },
+      {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        total_cost_usd: 0.04,
+        result: '1. `src/a.ts:3`: skips the first item.',
+        permission_denials: [{ tool_name: 'Bash', tool_input: { command: 'gh pr diff 7' } }],
+      },
+    ]);
+    const { io } = makeIo();
+    await main(['code-review'], env(file), io);
+    const summary = readFileSync(summaryFile, 'utf8');
+    expect(summary).toContain('### Cura: /code-review trace');
+    expect(summary).toContain('`claude-sonnet-5-5`');
+    expect(summary).toContain('- Permission denials: 1');
+    expect(summary).toContain('gh pr diff 7');
+    expect(summary).toContain('<details><summary>Denied tool calls</summary>\n\n```json\n{"tool":"Bash","input":{"command":"gh pr diff 7"}}\n```');
+    expect(summary).toContain('<details><summary>Result</summary>\n\n1. `src/a.ts:3`: skips the first item.');
+  });
+
+  test.each([
+    ['an error result', [{ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'partial' }]],
+    ['an empty result', [{ type: 'result', subtype: 'success', is_error: false, result: '  ' }]],
+    ['no result message', [{ type: 'system', subtype: 'init' }]],
+  ])('warns and saves nothing on %s', async (_name, messages) => {
+    const { io, code, text } = makeIo();
+    await main(['code-review'], env(writeExecution(messages)), io);
+    expect(code()).toBe(0);
+    expect(existsSync(join(ctx, 'code-review.md'))).toBe(false);
+    expect(text()).toContain('::warning::Cura: the /code-review pass returned no result');
+  });
+
+  test('warns and saves nothing when the execution file is missing', async () => {
+    const { io, code, text } = makeIo();
+    await main(['code-review'], env(join(root, 'missing.json')), io);
+    expect(code()).toBe(0);
+    expect(existsSync(join(ctx, 'code-review.md'))).toBe(false);
+    expect(text()).toContain('::warning::Cura: the /code-review pass returned no result');
   });
 });
 

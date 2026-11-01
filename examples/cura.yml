@@ -35,6 +35,7 @@ jobs:
     #   config: .github/cura.json
     #   model: claude-sonnet-5-5
     #   fail_on: none
+    #   code_review: 'off'
     #   max_files_per_scope: 12
     #   max_lines_per_scope: 1500
     #   timeout_minutes: 20
