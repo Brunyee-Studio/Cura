@@ -60,6 +60,8 @@ interface Setup {
   preview?: PreviewFixture;
   failOcr?: boolean;
   incrementalDiff?: string;
+  /** The PR merged origin/main in since PREV, so their merge bases differ. */
+  mergedBase?: boolean;
 }
 
 /** What `ocr` would read as its project rules: `<cwd>/.opencodereview/rule.json`, per call. */
@@ -103,6 +105,8 @@ function fakeExec(setup: Setup = {}) {
     if (cmd === 'ocr' && args[1] === 'rule') return JSON.stringify(RULES);
     if (key === ['git', 'diff', ...DIFF_FLAGS, 'origin/main...HEAD'].join(' ')) return DIFF;
     if (key === ['git', 'diff', ...DIFF_FLAGS, PREV, 'HEAD'].join(' ')) return setup.incrementalDiff ?? 'INCREMENTAL';
+    if (key === `git merge-base origin/main ${PREV}`) return 'f00\n';
+    if (key === 'git merge-base origin/main HEAD') return setup.mergedBase ? 'ba5e\n' : 'f00\n';
     if (key === `git merge-base --is-ancestor ${PREV} HEAD`) {
       if (!setup.ancestor) throw new Error('exit 1');
       return '';
@@ -307,6 +311,13 @@ describe('gatherContext', () => {
     const { gh } = fakeGitHub({ comments: [summaryComment(12, PREV)] });
     const result = await run(fakeExec({ ancestor: false }), gh);
     expect(result).toEqual({ mode: 'full', prevSha: PREV, summaryId: 12, reviewableCount: 3, deletedCount: 1, reviewLines: 17 });
+    expect(existsSync(join(ctxDir, 'incremental.diff'))).toBe(false);
+  });
+
+  test('full when the PR merged its base in since the previous review', async () => {
+    const { gh } = fakeGitHub({ comments: [summaryComment(12, PREV)] });
+    const result = await run(fakeExec({ ancestor: true, mergedBase: true }), gh);
+    expect(result).toMatchObject({ mode: 'full', prevSha: PREV, reviewLines: 17 });
     expect(existsSync(join(ctxDir, 'incremental.diff'))).toBe(false);
   });
 

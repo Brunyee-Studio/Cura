@@ -130,6 +130,15 @@ function isAncestor(opts: ContextOptions, sha: string): boolean {
   }
 }
 
+/**
+ * Whether the PR merged its base in since `sha`: its merge base moved. `sha..HEAD` would then carry the base's
+ * changes as if the PR made them, so the review runs in full over `origin/<base>...HEAD`, the PR's own changes.
+ */
+function mergedBase(opts: ContextOptions, sha: string): boolean {
+  const mergeBase = (rev: string) => opts.exec('git', ['merge-base', `origin/${opts.base}`, rev]).trim();
+  return mergeBase(sha) !== mergeBase('HEAD');
+}
+
 /** lstat that never follows links; null when the path is missing. */
 function lstatOrNull(path: string) {
   try {
@@ -258,7 +267,7 @@ export async function gatherContext(opts: ContextOptions): Promise<ContextResult
   const prevSha = summary ? ([...summary.body.matchAll(REVIEWED_SHA)].at(-1)?.[1] ?? null) : null;
   let mode: ContextResult['mode'] = 'full';
   let incrementalDiff: string | null = null;
-  if (prevSha !== null && prevSha !== opts.headSha && isAncestor(opts, prevSha)) {
+  if (prevSha !== null && prevSha !== opts.headSha && isAncestor(opts, prevSha) && !mergedBase(opts, prevSha)) {
     incrementalDiff = exec('git', ['diff', ...DIFF_FLAGS, prevSha, 'HEAD']);
     write('incremental.diff', incrementalDiff);
     mode = 'incremental';
