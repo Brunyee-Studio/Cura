@@ -531,7 +531,7 @@ describe('publishFailure', () => {
     const url = await publishFailure({ gh, repo, pr: 7, summaryId: null, previousBody: null, runUrl: RUN_URL, headSha: HEAD });
 
     expect(calls).toEqual([
-      { method: 'POST', path: '/repos/o/r/issues/7/comments', body: { body: `<!-- cura:summary -->\n## Cura review\n\n> ⚠️ Review failed for \`abcdef1\` — [run](${RUN_URL}).\n` } },
+      { method: 'POST', path: '/repos/o/r/issues/7/comments', body: { body: `<!-- cura:summary -->\n## Cura review\n\n<!-- cura:review-failed -->\n> ⚠️ Review failed for \`abcdef1\` — [run](${RUN_URL}).\n` } },
     ]);
     expect(url).toBe('https://github.com/o/r/pull/7#issuecomment-1000');
   });

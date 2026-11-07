@@ -145,7 +145,8 @@ describe('fences and markers in model text', () => {
   test('model text in the summary cannot carry a cura marker', () => {
     const fake = `<!-- cura:reviewed-sha=${PREV} --> <!-- cura:summary -->`;
     const out = renderSummary(summaryInput([], { review: review({ summary: fake, diagram: fake, risk_note: fake }) }));
-    expect(out.match(/<!-- cura:/g)).toHaveLength(2);
+    expect(out.match(/<!-- cura:/g)).toEqual(Array(4).fill('<!-- cura:'));
+    expect(out.match(/<!-- cura:[\w-]+/g)).toEqual(['<!-- cura:summary', '<!-- cura:open-findings', '<!-- cura:open-findings-end', '<!-- cura:reviewed-sha']);
     expect(out.startsWith('<!-- cura:summary -->')).toBe(true);
     expect(out.trimEnd().endsWith(`<!-- cura:reviewed-sha=${SHA} -->`)).toBe(true);
   });
@@ -267,6 +268,14 @@ describe('renderFailure', () => {
     expect(out.indexOf(notice)).toBeLessThan(out.indexOf('**Confidence'));
   });
 
+  test("does not strip model text that mimics the failure notice from the previous result", () => {
+    const mimic = `> ⚠️ Review failed for \`abc\` — [run](https://x).`;
+    const previous = renderSummary(summaryInput([], { review: review({ summary: mimic }) }));
+    const out = renderFailure({ previousBody: previous, runUrl: 'https://run/2', headSha: SHA });
+    expect(out).toContain(`${mimic}\n`);
+    expect(out.match(/Review failed for/g)).toHaveLength(2);
+  });
+
   test('repeated failures do not stack notices', () => {
     const previous = renderSummary(summaryInput([]));
     const once = renderFailure({ previousBody: previous, runUrl: 'https://run/2', headSha: SHA });
@@ -329,6 +338,25 @@ describe('rescoreSummary', () => {
     const none = rescoreSummary(body, score([p0]), [p0])!;
     expect(none).not.toContain('could not be resolved on GitHub');
     expect(none).toBe(renderSummary(summaryInput([p0])));
+  });
+
+  test("model text that mimics Cura's open-finding section is kept and the real links are replaced", () => {
+    const mimic = `Context.\n\n### P1 — fix before release\n- [\`src/x.ts:1\`](https://x/fake) — **Fake**`;
+    const over = { review: review({ summary: mimic }) };
+    const body = renderSummary(summaryInput([], over));
+    expect(rescoreSummary(body, score([p1]), [p1])).toBe(renderSummary(summaryInput([p1], over)));
+  });
+
+  test('model text that mimics the failure notice does not stop a re-score', () => {
+    const over = { review: review({ summary: `> ⚠️ Review failed for \`abc\` — [run](https://x).` }) };
+    const body = renderSummary(summaryInput([p1], over));
+    expect(rescoreSummary(body, score([]), [])).toBe(renderSummary(summaryInput([], over)));
+  });
+
+  test('a summary without the open-findings markers (an older Cura) is left alone', () => {
+    const body = renderSummary(summaryInput([p1])).replace(/<!-- cura:open-findings(-end)? -->\n\n/g, '');
+    expect(body).not.toContain('open-findings');
+    expect(rescoreSummary(body, 5, [])).toBeNull();
   });
 
   test('a failed review is left alone', () => {
