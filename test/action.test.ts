@@ -99,7 +99,7 @@ describe('action.yml', () => {
     test('runs after background tasks are off and is saved before the review step', () => {
       const keys = steps().map((s) => s.key);
       const setter = steps().findIndex((s) => s.text.includes('CLAUDE_CODE_DISABLE_BACKGROUND_TASKS'));
-      const save = keys.indexOf('Save /code-review findings');
+      const save = keys.indexOf('code_review_findings');
       expect(setter).toBeLessThan(keys.indexOf('code_review'));
       expect(save).toBe(keys.indexOf('code_review') + 1);
       expect(save).toBeLessThan(keys.indexOf('claude'));
@@ -109,7 +109,7 @@ describe('action.yml', () => {
       const condition = "if: steps.context.outputs.skip_agent == 'false' && inputs.code_review != 'off'";
       expect(step('code_review')).toContain(condition);
       expect(step('code_review')).toMatch(/^ {6}continue-on-error: true$/m);
-      expect(step('Save /code-review findings')).toContain(condition);
+      expect(step('code_review_findings')).toContain(condition);
       expect(action).toMatch(/^ {2}code_review:\n(?: {4}.*\n)* {4}default: 'off'$/m);
     });
 
@@ -118,9 +118,14 @@ describe('action.yml', () => {
       expect(step('code_review')).toContain('prompt: ${{ steps.prompt.outputs.code_review_prompt }}');
       expect(step('code_review')).toContain('claude_args: ${{ steps.prompt.outputs.code_review_args }}');
       expect(step('code_review')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
-      const save = step('Save /code-review findings');
+      const save = step('code_review_findings');
       expect(save).toContain('CURA_CODE_REVIEW_EXECUTION_FILE: ${{ steps.code_review.outputs.execution_file }}');
       expect(save).toContain('node "$GITHUB_ACTION_PATH/src/cli.ts" code-review');
+    });
+
+    // The lead was told to read a findings file and sometimes skipped it; its prompt carries them instead.
+    test('hands the lead the prompt with the findings, else the plain prompt', () => {
+      expect(step('claude')).toContain('prompt: ${{ steps.code_review_findings.outputs.prompt || steps.prompt.outputs.prompt }}');
     });
   });
 

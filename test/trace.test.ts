@@ -23,7 +23,6 @@ const trace = (over: Partial<ReviewTrace> = {}): ReviewTrace => ({
   denials: [],
   planChecks: 1,
   planFallback: false,
-  codeReviewRead: false,
   reportedFindings: [],
   ...over,
 });
@@ -47,7 +46,6 @@ describe('readTrace', () => {
       denials: [{ tool: 'Bash', input: { command: 'git log --oneline -20 && git diff origin/main...HEAD --stat', description: 'Inspect history' } }],
       planChecks: 2,
       planFallback: true,
-      codeReviewRead: false,
       reportedFindings: [],
     });
   });
@@ -117,14 +115,8 @@ describe('traceFrom', () => {
       denials: [],
       planChecks: 0,
       planFallback: false,
-      codeReviewRead: false,
       reportedFindings: [],
     });
-  });
-
-  test("records a Read of the /code-review pass's findings file, not of other files", () => {
-    expect(traceFrom([toolUse('a', 'Read', { file_path: '/tmp/cura/facts.json' })]).codeReviewRead).toBe(false);
-    expect(traceFrom([toolUse('a', 'Read', { file_path: '/tmp/cura/code-review.md' })]).codeReviewRead).toBe(true);
   });
 
   test('collects findings sent to ReportFindings across calls', () => {
@@ -160,13 +152,6 @@ describe('traceWarnings', () => {
     expect(traceWarnings(trace({ subagents: { verifier: 1 } }), large)).toEqual([
       `no scope-reviewer ran although the review has ${DIRECT_REVIEW_MAX_LINES + 1} changed lines (direct review allowed up to ${DIRECT_REVIEW_MAX_LINES})`,
     ]);
-  });
-
-  test('warns when the lead never read a saved code-review.md', () => {
-    const review = { ...large, codeReviewSaved: true };
-    expect(traceWarnings(trace(), review)).toEqual(['the lead never read code-review.md, so the /code-review findings were not used']);
-    expect(traceWarnings(trace({ codeReviewRead: true }), review)).toEqual([]);
-    expect(traceWarnings(trace(), { ...large, codeReviewSaved: false })).toEqual([]);
   });
 
   test('a direct review within the threshold is not warned about', () => {
