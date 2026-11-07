@@ -64,6 +64,8 @@ interface Placed<A> {
 interface Posted {
   finding: Finding;
   url: string;
+  /** Where the comment sits: the anchor's line, or null for a file-level comment. */
+  line: number | null;
 }
 
 interface Ctx {
@@ -91,15 +93,16 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
   }
 
   const review = opts.review as Review;
-  const kept = review.findings.filter((f) => SEVERITY_RANK[f.severity] <= SEVERITY_RANK[opts.minSeverity]);
+  // min_severity only gates new comments: an open thread the review downgraded below it is still edited to match.
+  const fresh = review.findings.filter((f) => f.status === 'new' && SEVERITY_RANK[f.severity] <= SEVERITY_RANK[opts.minSeverity]);
   const before = new Map((await fetchThreads(gh, repo, pr, opts.botLogin)).map((t) => [t.id, t]));
 
-  const { posted, unanchored } = await postNewFindings(ctx, kept.filter((f) => f.status === 'new'), opts.facts);
-  await editChangedFindings(ctx, kept.filter((f) => f.status === 'existing'), before);
+  const { posted, unanchored } = await postNewFindings(ctx, fresh, opts.facts);
+  await editChangedFindings(ctx, review.findings.filter((f) => f.status === 'existing'), before);
   const closed = await closeThreads(ctx, review, before);
 
   const after = await fetchThreads(gh, repo, pr, opts.botLogin);
-  const open = collectOpen(after, closed.ids, posted, kept);
+  const open = collectOpen(after, closed.ids, posted, review.findings);
 
   const body = renderSummary({
     review,
@@ -147,12 +150,12 @@ async function postNewFindings(ctx: Ctx, findings: Finding[], diff: PublishOptio
         body: `Cura found ${lines.length + files.length} new issue(s). See the summary comment.`,
         comments: lines.map(({ finding, anchor }) => ({ ...linePosition(anchor), body: renderFindingComment(finding, { anchor }) })),
       });
-      posted.push(...lines.map(({ finding }) => ({ finding, url: res.html_url })));
+      posted.push(...lines.map(({ finding, anchor }) => ({ finding, url: res.html_url, line: anchor.line })));
     } catch (err) {
       if (!isUnprocessable(err)) throw err;
       for (const placed of lines) {
         const url = await postLineComment(ctx, placed);
-        if (url !== null) posted.push({ finding: placed.finding, url });
+        if (url !== null) posted.push({ finding: placed.finding, url, line: placed.anchor.line });
         else files.push({ finding: placed.finding, anchor: { kind: 'file', path: placed.anchor.path } });
       }
     }
@@ -160,7 +163,7 @@ async function postNewFindings(ctx: Ctx, findings: Finding[], diff: PublishOptio
 
   for (const placed of files) {
     const url = await postFileComment(ctx, placed);
-    if (url !== null) posted.push({ finding: placed.finding, url });
+    if (url !== null) posted.push({ finding: placed.finding, url, line: null });
     else unanchored.push(placed.finding);
   }
   return { posted, unanchored };
@@ -237,6 +240,7 @@ function stripSuggestion(body: string): string {
 /**
  * Resolves each fixed or dismissed thread once, then replies; human-resolved and unknown threads are left alone.
  * Resolving first means a refused resolve (e.g. a token without `contents: write`) leaves no stray reply behind.
+ * A failed reply (e.g. a locked conversation) only loses the reply: the thread is resolved either way.
  */
 async function closeThreads(ctx: Ctx, review: Review, threads: Map<string, Thread>) {
   const ids = new Set<string>();
@@ -263,7 +267,9 @@ async function closeThreads(ctx: Ctx, review: Review, threads: Map<string, Threa
       continue;
     }
     ids.add(id);
-    await replyToComment(ctx.gh, ctx.repo, ctx.pr, thread.commentId, reply);
+    await replyToComment(ctx.gh, ctx.repo, ctx.pr, thread.commentId, reply).catch((err: unknown) => {
+      if (!(err instanceof GitHubError)) throw err;
+    });
     record(thread);
   }
   return { ids, resolved, dismissed, unresolved };
@@ -283,9 +289,9 @@ function collectOpen(threads: Thread[], closedIds: Set<string>, posted: Posted[]
   const openThreads = threads.filter((t) => !t.isResolved && !closedIds.has(t.id));
   const open = openThreads.map((t) => threadLink(t, byFingerprint.get(t.meta.fingerprint)?.title));
   const seen = new Set(openThreads.map((t) => t.meta.fingerprint));
-  for (const { finding, url } of posted) {
+  for (const { finding, url, line } of posted) {
     if (seen.has(fingerprint(finding))) continue;
-    open.push({ severity: finding.severity, category: finding.category, title: finding.title, path: finding.path, line: finding.line, url });
+    open.push({ severity: finding.severity, category: finding.category, title: finding.title, path: finding.path, line, url });
   }
   return open;
 }
