@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseShell } from 'shell-quote';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { codeReviewAllowedTools, codeReviewDisallowedTools } from '../src/agents.ts';
+import { codeReviewAllowedTools, codeReviewDisallowedTools, withCodeReviewFindings } from '../src/agents.ts';
 import { main, shellQuote, type Deps } from '../src/cli.ts';
 import { GitHubError, type GitHub } from '../src/github.ts';
 import { renderSummary } from '../src/render.ts';
@@ -389,16 +389,6 @@ describe('publish', () => {
       expect(summary()).toContain('Plan checks: 2 (fallback plan used)');
       expect(text()).not.toContain('::warning::');
       expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('review trace');
-    });
-
-    test('warns when the lead never read the saved /code-review findings', async () => {
-      seedCtx();
-      writeFileSync(join(ctx, 'code-review.md'), '1. `src/a.ts:3`: skips the first item.\n');
-      const { gh } = fakeGitHub();
-      const { io, text, code } = makeIo();
-      await main(['publish'], env({ CURA_EXECUTION_FILE: writeExecution() }), io, { createGitHub: () => gh });
-      expect(code()).toBe(0);
-      expect(text()).toContain('::warning::Cura: the lead never read code-review.md, so the /code-review findings were not used');
     });
 
     test('warns when the verifier never ran on a candidate', async () => {
@@ -859,14 +849,28 @@ describe('code-review', () => {
     writeFileSync(file, JSON.stringify(messages));
     return file;
   };
-  const env = (file: string) => ({ CURA_CTX: ctx, CURA_CODE_REVIEW_EXECUTION_FILE: file, GITHUB_STEP_SUMMARY: summaryFile });
+  const env = (file: string) => ({
+    CURA_CTX: ctx,
+    CURA_CODE_REVIEW_EXECUTION_FILE: file,
+    GITHUB_STEP_SUMMARY: summaryFile,
+    GITHUB_OUTPUT: outputFile,
+  });
+  const leadPrompt = () => readFileSync(join(ctx, 'lead-prompt.md'), 'utf8');
+  /** The findings fenced at the end of the lead prompt. */
+  const handed = () => /\n(`{3,})\n([\s\S]*)\n\1\n$/.exec(leadPrompt())![2];
 
-  test("saves the pass's final result for the lead", async () => {
-    const file = writeExecution([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, result: '1. `src/a.ts:3`: skips the first item.' }]);
+  beforeEach(() => writeFileSync(join(ctx, 'lead-prompt.md'), 'LEAD PROMPT\n'));
+
+  test("hands the pass's final result to the lead in its prompt", async () => {
+    const notes = '1. `src/a.ts:3`: skips the first item.';
+    const file = writeExecution([{ type: 'system', subtype: 'init' }, { type: 'result', subtype: 'success', is_error: false, result: notes }]);
     const { io, code, text } = makeIo();
     await main(['code-review'], env(file), io);
     expect(code()).toBe(0);
-    expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toBe('1. `src/a.ts:3`: skips the first item.\n');
+    expect(leadPrompt()).toBe(withCodeReviewFindings('LEAD PROMPT\n', notes));
+    expect(outputs()).toMatch(/^prompt<<(CURA_[0-9a-f]+)\n([\s\S]*)\n\1\n$/);
+    expect(/^prompt<<(CURA_[0-9a-f]+)\n([\s\S]*)\n\1\n$/.exec(outputs())![2]).toBe(leadPrompt());
+    expect(existsSync(join(ctx, 'code-review.md'))).toBe(false);
     expect(text()).not.toContain('::warning::');
   });
 
@@ -878,7 +882,7 @@ describe('code-review', () => {
     ]);
     const { io, text } = makeIo();
     await main(['code-review'], env(file), io);
-    const notes = readFileSync(join(ctx, 'code-review.md'), 'utf8');
+    const notes = handed();
     expect(notes).toMatch(/^Reported 1 finding\.\n\n## Reported findings\n\n```json\n/);
     expect(JSON.parse(/```json\n([\s\S]*)\n```/.exec(notes)![1]!)).toEqual([reported]);
     expect(text()).not.toContain('::warning::');
@@ -891,7 +895,7 @@ describe('code-review', () => {
     ]);
     const { io } = makeIo();
     await main(['code-review'], env(file), io);
-    expect(readFileSync(join(ctx, 'code-review.md'), 'utf8')).toMatch(/^## Reported findings/);
+    expect(handed()).toMatch(/^## Reported findings/);
   });
 
   test('writes its trace, denials and result to the job summary', async () => {
@@ -921,19 +925,21 @@ describe('code-review', () => {
     ['an error result', [{ type: 'result', subtype: 'error_max_turns', is_error: true, result: 'partial' }]],
     ['an empty result', [{ type: 'result', subtype: 'success', is_error: false, result: '  ' }]],
     ['no result message', [{ type: 'system', subtype: 'init' }]],
-  ])('warns and saves nothing on %s', async (_name, messages) => {
+  ])('warns and leaves the lead prompt as it was on %s', async (_name, messages) => {
     const { io, code, text } = makeIo();
     await main(['code-review'], env(writeExecution(messages)), io);
     expect(code()).toBe(0);
-    expect(existsSync(join(ctx, 'code-review.md'))).toBe(false);
+    expect(leadPrompt()).toBe('LEAD PROMPT\n');
+    expect(outputs()).toBe('');
     expect(text()).toContain('::warning::Cura: the /code-review pass returned no result');
   });
 
-  test('warns and saves nothing when the execution file is missing', async () => {
+  test('warns and leaves the lead prompt as it was when the execution file is missing', async () => {
     const { io, code, text } = makeIo();
     await main(['code-review'], env(join(root, 'missing.json')), io);
     expect(code()).toBe(0);
-    expect(existsSync(join(ctx, 'code-review.md'))).toBe(false);
+    expect(leadPrompt()).toBe('LEAD PROMPT\n');
+    expect(outputs()).toBe('');
     expect(text()).toContain('::warning::Cura: the /code-review pass returned no result');
   });
 });

@@ -235,8 +235,11 @@ runs:
         claude_args: ${{ steps.prompt.outputs.code_review_args }}
         allowed_bots: ${{ inputs.allowed_bots }}
 
-    # Saved before the review runs, which writes its own execution file.
+    # Saved before the review runs, which writes its own execution file. It
+    # outputs the lead prompt with the findings appended, so the lead cannot
+    # skip them (it was told to read them from a file and sometimes didn't).
     - name: Save /code-review findings
+      id: code_review_findings
       if: steps.context.outputs.skip_agent == 'false' && inputs.code_review != 'off'
       shell: bash
       env:
@@ -258,7 +261,7 @@ runs:
       with:
         claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
         github_token: ${{ inputs.github_token }}
-        prompt: ${{ steps.prompt.outputs.prompt }}
+        prompt: ${{ steps.code_review_findings.outputs.prompt || steps.prompt.outputs.prompt }}
         claude_args: ${{ steps.prompt.outputs.claude_args }}
         allowed_bots: ${{ inputs.allowed_bots }}
 

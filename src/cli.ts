@@ -7,13 +7,13 @@ import {
   allowedTools,
   allowsDirectReview,
   buildAgents,
-  CODE_REVIEW_FILE,
   codeReviewAllowedTools,
   codeReviewDisallowedTools,
   codeReviewPrompt,
   disallowedTools,
   DRAFTS_DIR,
   renderLeadPrompt,
+  withCodeReviewFindings,
 } from './agents.ts';
 import { checkReview, formatErrors } from './check.ts';
 import { gatherContext } from './context.ts';
@@ -257,7 +257,7 @@ function prompt(env: Env, io: Io): void {
 
 // ── code-review ──────────────────────────────────────────────────────────────
 
-/** The lead reads it as `code-review.md`; a failed pass only costs those leads, so it warns and the review goes on. */
+/** Appends the result to the lead prompt and outputs it; a failed pass only costs those leads, so it warns and the review goes on. */
 function saveCodeReview(env: Env, io: Io): void {
   const ctxDir = ctxFromEnv(env);
   const file = env.CURA_CODE_REVIEW_EXECUTION_FILE;
@@ -278,7 +278,10 @@ function saveCodeReview(env: Env, io: Io): void {
     io.stdout('::warning::Cura: the /code-review pass returned no result, so the review runs without its findings.');
     return;
   }
-  writeFileSync(join(ctxDir, CODE_REVIEW_FILE), `${notes}\n`);
+  const leadFile = join(ctxDir, 'lead-prompt.md');
+  const lead = withCodeReviewFindings(readFileSync(leadFile, 'utf8'), notes);
+  writeFileSync(leadFile, lead);
+  setOutputs(env, io, { prompt: lead });
 }
 
 // The trace trims each denial to one line; the pass picks its own commands, so they are listed in full too.
@@ -490,8 +493,7 @@ function reportTrace(env: Env, io: Io, file: string, state: RunState, review: un
   const { findings, discarded } = (review ?? {}) as Partial<Review>;
   const candidates = (Array.isArray(findings) ? findings.length : 0) + (Array.isArray(discarded) ? discarded.length : 0);
   const openThreads = readJson<Thread[]>(ctxDir, 'threads.json').filter((t) => !t.isResolved).length;
-  const codeReviewSaved = existsSync(join(ctxDir, CODE_REVIEW_FILE));
-  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads, codeReviewSaved })) {
+  for (const warning of traceWarnings(trace, { reviewLines: state.reviewLines, candidates, openThreads })) {
     io.stdout(`::warning::Cura: ${warning}`);
   }
 }
