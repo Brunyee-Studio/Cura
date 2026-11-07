@@ -276,6 +276,18 @@ describe('renderFailure', () => {
     expect(out.match(/Review failed for/g)).toHaveLength(2);
   });
 
+  test("replaces an older Cura's unmarked notice, over a previous result or on its own", () => {
+    const legacyNotice = '> ⚠️ Review failed for `abc1234` — [run](https://run/1).';
+    const legacyOver = `<!-- cura:summary -->\n${legacyNotice} Showing the previous result.\n\n## Cura review\n\n**Confidence 5/5** — No open findings\n`;
+    const legacyAlone = `<!-- cura:summary -->\n## Cura review\n\n${legacyNotice}\n`;
+    for (const previousBody of [legacyOver, legacyAlone]) {
+      const out = renderFailure({ previousBody, runUrl: 'https://run/2', headSha: SHA });
+      expect(out.match(/Review failed for/g)).toHaveLength(1);
+      expect(out).toContain('[run](https://run/2)');
+      expect(out).toContain('## Cura review');
+    }
+  });
+
   test('repeated failures do not stack notices', () => {
     const previous = renderSummary(summaryInput([]));
     const once = renderFailure({ previousBody: previous, runUrl: 'https://run/2', headSha: SHA });

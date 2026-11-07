@@ -7,6 +7,8 @@ const CURA_MARKER_RE = /<!--(\s*)cura:/g;
 // Model text is neutralised, so it cannot carry these markers and pass for Cura's own sections.
 const FAILED_MARKER = '<!-- cura:review-failed -->';
 const FAILURE_LINE_RE = /^<!-- cura:review-failed -->\n> ⚠️ Review failed for .*\n\n?/m;
+// An older Cura's notice has no marker, but sits where model text never does: first, or under the heading alone.
+const LEGACY_FAILURE_LINE_RE = /^(## Cura review\n\n)?> ⚠️ Review failed for .*\n\n?/;
 const OPEN_START = '<!-- cura:open-findings -->';
 const OPEN_END = '<!-- cura:open-findings-end -->';
 
@@ -140,7 +142,7 @@ export function renderSummary(input: SummaryInput): string {
 export function renderFailure(input: { previousBody: string | null; runUrl: string; headSha: string }): string {
   const head = `${FAILED_MARKER}\n> ⚠️ Review failed for \`${short(input.headSha)}\` — [run](${input.runUrl}).`;
   if (input.previousBody === null) return `${SUMMARY_MARKER}\n## Cura review\n\n${head}\n`;
-  const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '');
+  const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '').replace(LEGACY_FAILURE_LINE_RE, '$1');
   return `${SUMMARY_MARKER}\n${head} Showing the previous result.\n\n${rest}`;
 }
 
