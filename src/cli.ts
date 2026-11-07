@@ -263,11 +263,8 @@ function saveCodeReview(env: Env, io: Io): void {
   const ctxDir = ctxFromEnv(env);
   const file = env.CURA_CODE_REVIEW_EXECUTION_FILE;
   const trace = file ? readTrace(file) : null;
-  const messages = file && existsSync(file) ? parseJson(readFileSync(file, 'utf8')) : undefined;
-  const result = (Array.isArray(messages) ? messages.find((m: { type?: unknown } | null) => m?.type === 'result') : undefined) as
-    | { subtype?: unknown; is_error?: unknown; result?: unknown }
-    | undefined;
-  const text = result?.subtype === 'success' && !result.is_error && typeof result.result === 'string' ? result.result.trim() : '';
+  const result = file && existsSync(file) ? successfulResult(file) : undefined;
+  const text = typeof result?.result === 'string' ? result.result.trim() : '';
   // The skill can report its findings through ReportFindings and leave only a summary in its final text.
   const reported = trace?.reportedFindings ?? [];
   const notes = [
@@ -471,18 +468,24 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
 }
 
 /**
- * The review from claude-code-action's execution file (its SDK message list), derived as upstream derives its
- * `structured_output` output: the first `result` message, when it succeeded without error. Read from a file
- * because a large review passed through env exceeds Linux's 128 KiB per-string limit and the step cannot start.
+ * The review from claude-code-action's execution file, read from a file because a large review passed through
+ * env exceeds Linux's 128 KiB per-string limit and the step cannot start.
  */
 function structuredOutputFrom(file: string): unknown {
+  return successfulResult(file)?.structured_output || undefined;
+}
+
+/**
+ * A session's outcome in claude-code-action's execution file (its SDK message list), found as upstream finds its
+ * outputs: the first `result` message, when it succeeded without error.
+ */
+function successfulResult(file: string): { result?: unknown; structured_output?: unknown } | undefined {
   const messages = parseJson(readFileSync(file, 'utf8'));
   if (!Array.isArray(messages)) return undefined;
   const result = messages.find((m: { type?: unknown } | null) => m?.type === 'result') as
-    | { subtype?: unknown; is_error?: unknown; structured_output?: unknown }
+    | { subtype?: unknown; is_error?: unknown; result?: unknown; structured_output?: unknown }
     | undefined;
-  if (result?.subtype !== 'success' || result.is_error || !result.structured_output) return undefined;
-  return result.structured_output;
+  return result?.subtype === 'success' && !result.is_error ? result : undefined;
 }
 
 /** The lead's trace goes to the job summary only, never the PR; an unreadable execution file just has none. */
