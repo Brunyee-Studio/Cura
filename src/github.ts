@@ -21,21 +21,35 @@ export interface GitHubOptions {
   apiUrl?: string;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
 }
 
 const MAX_ATTEMPTS = 4;
 const BACKOFF_MS = [1000, 2000, 4000];
+/** Longer than this until the rate limit resets and the run fails now rather than idling the runner. */
+const MAX_RATE_LIMIT_WAIT_MS = 5 * 60_000;
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function isRetryable(res: Response): boolean {
-  if (res.status >= 500 || res.status === 429) return true;
+function isRateLimited(res: Response): boolean {
+  if (res.status === 429) return true;
   return res.status === 403 && (res.headers.get('x-ratelimit-remaining') === '0' || res.headers.has('retry-after'));
 }
 
-function retryDelay(res: Response, attempt: number): number {
+// GitHub rejects a rate-limited request without acting on it, so any request may retry that.
+// A 5xx may come after the write landed, so only an idempotent request retries one:
+// a retried POST could post a review or comment twice.
+function isRetryable(res: Response, idempotent: boolean): boolean {
+  return isRateLimited(res) || (idempotent && res.status >= 500);
+}
+
+function retryDelay(res: Response, attempt: number, now: number): number {
   const retryAfter = Number(res.headers.get('retry-after'));
   if (res.headers.has('retry-after') && Number.isFinite(retryAfter) && retryAfter >= 0) return retryAfter * 1000;
+  const reset = Number(res.headers.get('x-ratelimit-reset'));
+  if (res.headers.get('x-ratelimit-remaining') === '0' && res.headers.has('x-ratelimit-reset') && Number.isFinite(reset)) {
+    return Math.max(0, reset * 1000 - now);
+  }
   return BACKOFF_MS[attempt - 1];
 }
 
@@ -60,8 +74,9 @@ export function createGitHub(opts: GitHubOptions): GitHub {
   const apiUrl = (opts.apiUrl ?? process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '');
   const doFetch = opts.fetch ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
+  const now = opts.now ?? Date.now;
 
-  async function request(method: string, url: string, body?: unknown): Promise<{ res: Response; data: unknown }> {
+  async function request(method: string, url: string, body?: unknown, idempotent = method !== 'POST'): Promise<{ res: Response; data: unknown }> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${opts.token}`,
       Accept: 'application/vnd.github+json',
@@ -77,10 +92,11 @@ export function createGitHub(opts: GitHubOptions): GitHub {
       const res = await doFetch(url, init);
       if (res.ok) return { res, data: await readBody(res) };
       const data = await readBody(res);
-      if (attempt >= MAX_ATTEMPTS || !isRetryable(res)) {
+      const delay = retryDelay(res, attempt, now());
+      if (attempt >= MAX_ATTEMPTS || !isRetryable(res, idempotent) || delay > MAX_RATE_LIMIT_WAIT_MS) {
         throw new GitHubError(`GitHub ${method} ${url} failed with ${res.status}`, res.status, data);
       }
-      await sleep(retryDelay(res, attempt));
+      await sleep(delay);
     }
   }
 
@@ -101,8 +117,9 @@ export function createGitHub(opts: GitHubOptions): GitHub {
       return items;
     },
 
+    // Cura's GraphQL calls are thread queries and resolveReviewThread, which is idempotent, so they retry a 5xx.
     async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-      const { data } = await request('POST', `${apiUrl}/graphql`, { query, variables });
+      const { data } = await request('POST', `${apiUrl}/graphql`, { query, variables }, true);
       const payload = data as { data?: T; errors?: { message?: string }[] };
       if (Array.isArray(payload.errors) && payload.errors.length > 0) {
         const messages = payload.errors.map((e) => e?.message ?? JSON.stringify(e)).join('; ');

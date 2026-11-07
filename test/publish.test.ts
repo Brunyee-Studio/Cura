@@ -242,6 +242,27 @@ describe('publish', () => {
     expect(summaryBody(calls)).toContain('### Resolved since last review');
   });
 
+  test('a failed reply still records the resolved thread and goes on to the next one', async () => {
+    const a = finding();
+    const b = finding({ path: 'src/b.ts', line: 2, title: 'Other' });
+    const { gh, calls } = fakeGitHub({
+      threads: [[threadNode('RT_1', 101, a), threadNode('RT_2', 102, b)], [threadNode('RT_1', 101, a, { isResolved: true }), threadNode('RT_2', 102, b, { isResolved: true })]],
+      fail422: (c) => c.path.endsWith('/comments/101/replies'),
+    });
+
+    const result = await run(gh, { review: review({ resolved: [{ thread_id: 'RT_1', note: 'fixed a' }, { thread_id: 'RT_2', note: 'fixed b' }] }) });
+
+    expect(calls.filter((c) => c.path === 'resolveReviewThread').map((c) => c.body)).toEqual([{ threadId: 'RT_1' }, { threadId: 'RT_2' }]);
+    expect(calls.filter((c) => c.path.endsWith('/replies')).map((c) => c.path)).toEqual([
+      '/repos/o/r/pulls/7/comments/101/replies',
+      '/repos/o/r/pulls/7/comments/102/replies',
+    ]);
+    expect(result).toMatchObject({ score: 5, failed: false });
+    const summary = summaryBody(calls);
+    expect(summary).toContain('fixed a');
+    expect(summary).toContain('fixed b');
+  });
+
   test('dismissed thread gets the resolve mutation, then a Dismissed reply', async () => {
     const old = finding();
     const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_1', 101, old)]] });
@@ -410,6 +431,19 @@ describe('publish', () => {
     expect(result.score).toBe(2);
   });
 
+  test('an existing thread downgraded below minSeverity is still edited to its new severity', async () => {
+    const before = finding({ status: 'existing', thread_id: 'RT_1' });
+    const after = { ...before, severity: 'P2' as const };
+    const { gh, rest } = fakeGitHub({ threads: [[threadNode('RT_1', 101, before)], [threadNode('RT_1', 101, after)]] });
+
+    const result = await run(gh, { review: review({ findings: [after] }), minSeverity: 'P1' });
+
+    expect(rest('PATCH', '/pulls/comments/101').map((c) => c.body)).toEqual([
+      { body: renderFindingComment(after, { anchor: { kind: 'line', path: 'src/a.ts', line: 12, snapped: false } }) },
+    ]);
+    expect(result).toMatchObject({ score: 4, findings: 1 });
+  });
+
   test('score covers open Cura threads the review did not mention', async () => {
     const unmentioned = finding({ severity: 'P0', category: 'security', title: 'SQL injection', path: 'src/b.ts', line: 4 });
     const { gh, calls } = fakeGitHub({ threads: [[threadNode('RT_9', 909, unmentioned)]] });
@@ -474,6 +508,22 @@ describe('publish', () => {
   });
 });
 
+describe('publish summary links before the refetch catches up', () => {
+  test('cite the line a snapped comment sits on, and only the path for a file-level one', async () => {
+    const snapped = finding({ line: 33, title: 'Snapped' });
+    const fileLevel = finding({ line: 200, title: 'Far away' });
+    const { gh, calls } = fakeGitHub();
+
+    await run(gh, { review: review({ findings: [snapped, fileLevel] }) });
+
+    const summary = summaryBody(calls);
+    expect(summary).toContain('[`src/a.ts:30`]');
+    expect(summary).toMatch(/\[`src\/a\.ts`\]\([^)]*\) — \*\*Far away\*\*/);
+    expect(summary).not.toContain('src/a.ts:33');
+    expect(summary).not.toContain('src/a.ts:200');
+  });
+});
+
 describe('publishFailure', () => {
   test('creates a failure summary when there is none', async () => {
     const { gh, calls } = fakeGitHub();
@@ -481,7 +531,7 @@ describe('publishFailure', () => {
     const url = await publishFailure({ gh, repo, pr: 7, summaryId: null, previousBody: null, runUrl: RUN_URL, headSha: HEAD });
 
     expect(calls).toEqual([
-      { method: 'POST', path: '/repos/o/r/issues/7/comments', body: { body: `<!-- cura:summary -->\n## Cura review\n\n> ⚠️ Review failed for \`abcdef1\` — [run](${RUN_URL}).\n` } },
+      { method: 'POST', path: '/repos/o/r/issues/7/comments', body: { body: `<!-- cura:summary -->\n## Cura review\n\n<!-- cura:review-failed -->\n> ⚠️ Review failed for \`abcdef1\` — [run](${RUN_URL}).\n` } },
     ]);
     expect(url).toBe('https://github.com/o/r/pull/7#issuecomment-1000');
   });

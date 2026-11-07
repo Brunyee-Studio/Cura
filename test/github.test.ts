@@ -15,10 +15,12 @@ function fakeFetch(replies: Reply[]) {
   return { fetch: fn as unknown as typeof fetch, calls };
 }
 
+const NOW_MS = 1_700_000_000_000;
+
 function setup(replies: Reply[]) {
   const { fetch, calls } = fakeFetch(replies);
   const sleep = vi.fn(async (_ms: number) => {});
-  const gh = createGitHub({ token: 't0k', apiUrl: 'https://api.test', fetch, sleep });
+  const gh = createGitHub({ token: 't0k', apiUrl: 'https://api.test', fetch, sleep, now: () => NOW_MS });
   return { gh, calls, sleep };
 }
 
@@ -81,6 +83,37 @@ describe('rest', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  test('waits for the rate limit to reset when it is exhausted', async () => {
+    const reset = String(NOW_MS / 1000 + 90);
+    const { gh, sleep } = setup([
+      { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset } },
+      { status: 200, body: { ok: 1 } },
+    ]);
+    expect(await gh.rest('GET', '/x')).toEqual({ ok: 1 });
+    expect(sleep).toHaveBeenCalledWith(90_000);
+  });
+
+  test('throws at once when the rate limit resets too far off to wait for', async () => {
+    const reset = String(NOW_MS / 1000 + 30 * 60);
+    const { gh, calls, sleep } = setup([{ status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': reset } }]);
+    await expect(gh.rest('GET', '/x')).rejects.toMatchObject({ status: 403 });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  test('a POST that fails with a 5xx is not retried: the write may have landed', async () => {
+    const { gh, calls, sleep } = setup([{ status: 502 }]);
+    await expect(gh.rest('POST', '/repos/o/r/pulls/7/reviews', {})).rejects.toMatchObject({ status: 502 });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  test('a rate-limited POST is retried: GitHub did not act on it', async () => {
+    const { gh, calls } = setup([{ status: 429, headers: { 'retry-after': '1' } }, { status: 201, body: { id: 1 } }]);
+    expect(await gh.rest('POST', '/repos/o/r/issues/7/comments', {})).toEqual({ id: 1 });
+    expect(calls).toHaveLength(2);
+  });
+
   test('plain 403 throws without retry', async () => {
     const { gh, calls } = setup([{ status: 403, body: { message: 'nope' } }]);
     await expect(gh.rest('GET', '/x')).rejects.toMatchObject({ status: 403 });
@@ -124,6 +157,12 @@ describe('graphql', () => {
     expect(await gh.graphql('query { viewer { login } }', { a: 1 })).toEqual({ viewer: { login: 'me' } });
     expect(calls[0].url).toBe('https://api.test/graphql');
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ query: 'query { viewer { login } }', variables: { a: 1 } });
+  });
+
+  test('retries a 5xx: its queries and mutation are idempotent', async () => {
+    const { gh, calls } = setup([{ status: 502 }, { status: 200, body: { data: { ok: true } } }]);
+    expect(await gh.graphql('q', {})).toEqual({ ok: true });
+    expect(calls).toHaveLength(2);
   });
 
   test('errors array throws GitHubError with status 200', async () => {

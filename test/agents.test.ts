@@ -315,23 +315,49 @@ describe('codeReviewPrompt', () => {
 });
 
 describe('codeReviewAllowedTools', () => {
-  const entries = codeReviewAllowedTools('/home/runner/work/o/r').split(',');
-  const subcommands = ['diff', 'log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'];
+  const workspace = '/home/runner/work/o/r';
+  const entries = codeReviewAllowedTools({ workspace, base: 'main', mode: 'full', prevSha: null }).split(',');
+  const subcommands = ['log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'];
+  const forms = (range: string) => [
+    `diff ${range}`,
+    `diff --stat ${range}`,
+    `diff --name-only ${range}`,
+    `diff --name-status ${range}`,
+    `diff ${range} --:*`,
+    ...subcommands.map((cmd) => `${cmd}:*`),
+  ];
 
-  test('grants read-only file tools, subagents and read-only git subcommands, also as `git -C <workspace>`', () => {
+  test('grants read-only file tools, subagents, pinned diffs and read-only git subcommands, also as `git -C <workspace>`', () => {
     expect(entries).toEqual([
       'Read(./**)',
       'Grep',
       'Glob',
       'Agent',
       'Task',
-      ...subcommands.map((cmd) => `Bash(git ${cmd}:*)`),
-      ...subcommands.map((cmd) => `Bash(git -C /home/runner/work/o/r ${cmd}:*)`),
+      ...forms('origin/main...HEAD').map((form) => `Bash(git ${form})`),
+      ...forms('origin/main...HEAD').map((form) => `Bash(git -C ${workspace} ${form})`),
     ]);
   });
 
-  test.each(['/home/runner/work/o/r,Bash', '/home/runner/work/o r', 'work/o/r'])('rejects workspace %j', (workspace) => {
-    expect(() => codeReviewAllowedTools(workspace)).toThrow(/workspace/);
+  test('pins the diffs to the new commits in incremental mode', () => {
+    const prevSha = 'b'.repeat(40);
+    const incremental = codeReviewAllowedTools({ workspace, base: 'main', mode: 'incremental', prevSha }).split(',');
+    expect(incremental.filter((e) => e.startsWith('Bash(git diff'))).toEqual(forms(`${prevSha}...HEAD`).slice(0, 5).map((form) => `Bash(git ${form})`));
+  });
+
+  // Two paths, one outside the work tree, turn `git diff` into `--no-index`, which reads any file.
+  test('grants no diff form that can take two paths', () => {
+    const diffs = entries.filter((e) => /^Bash\(git (-C \S+ )?diff /.test(e));
+    expect(diffs.filter((e) => e.endsWith(':*)'))).toEqual(['Bash(git diff origin/main...HEAD --:*)', `Bash(git -C ${workspace} diff origin/main...HEAD --:*)`]);
+    expect(diffs.filter((e) => e.includes('*') && !e.endsWith(' --:*)'))).toEqual([]);
+  });
+
+  test.each(['/home/runner/work/o/r,Bash', '/home/runner/work/o r', 'work/o/r'])('rejects workspace %j', (bad) => {
+    expect(() => codeReviewAllowedTools({ workspace: bad, base: 'main', mode: 'full', prevSha: null })).toThrow(/workspace/);
+  });
+
+  test('rejects an unsafe base', () => {
+    expect(() => codeReviewAllowedTools({ workspace, base: 'x),Bash,Read(', mode: 'full', prevSha: null })).toThrow(/base/);
   });
 
   test('grants no writes, no GitHub tools and no generic bash', () => {

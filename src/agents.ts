@@ -160,27 +160,47 @@ export function allowedTools(vars: { base: string; ctxDir: string; curaDir: stri
 /** Claude Code `/code-review` levels Cura runs; `max` and `ultra` start many reviewers or a cloud review. */
 export const CODE_REVIEW_LEVELS = ['low', 'medium', 'high'];
 
-/** The `/code-review` pass covers the diff the lead reviews: the new commits in incremental mode, else the whole PR. */
-export function codeReviewPrompt(vars: { level: string; base: string; mode: string; prevSha: string | null }): string {
-  if (!CODE_REVIEW_LEVELS.includes(vars.level)) throw new Error(`code_review must be off, low, medium or high (got ${JSON.stringify(vars.level)})`);
+interface CodeReviewRangeVars {
+  base: string;
+  mode: string;
+  prevSha: string | null;
+}
+
+/** The diff the lead reviews: the new commits in incremental mode, else the whole PR. */
+function codeReviewRange(vars: CodeReviewRangeVars): string {
   assertSafeRuleValues({ base: vars.base });
   const from = vars.mode === 'incremental' && vars.prevSha ? vars.prevSha : `origin/${vars.base}`;
-  return `/code-review ${vars.level} ${from}...HEAD`;
+  return `${from}...HEAD`;
+}
+
+/** The `/code-review` pass covers the diff the lead reviews. */
+export function codeReviewPrompt(vars: CodeReviewRangeVars & { level: string }): string {
+  if (!CODE_REVIEW_LEVELS.includes(vars.level)) throw new Error(`code_review must be off, low, medium or high (got ${JSON.stringify(vars.level)})`);
+  return `/code-review ${vars.level} ${codeReviewRange(vars)}`;
 }
 
 // The /code-review pass also reads untrusted PR content. Its recipe picks its own
 // git commands, so it gets read-only git subcommands instead of the lead's one
 // pinned form, and no write or GitHub tools: its findings are text for the lead.
 // The recipe also runs them as `git -C <workspace>`, which those rules don't match.
-export function codeReviewAllowedTools(workspace: string): string {
-  assertSafeRuleValues({ workspace });
-  const subcommands = ['diff', 'log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'];
-  const git = subcommands.map((cmd) => `Bash(git ${cmd}:*)`);
-  const gitInWorkspace = subcommands.map((cmd) => `Bash(git -C ${workspace} ${cmd}:*)`);
+// `git diff` given exactly two paths, one outside the work tree, turns into `--no-index`
+// without the flag, even after `--` or when the first is a file the PR added under the
+// range's name, and diffs any file (.git/config and its token included). So diff is
+// pinned to forms that can't take two paths: the range alone or after one stat flag,
+// or the range then `--`, after which git reads every argument as a pathspec.
+export function codeReviewAllowedTools(vars: CodeReviewRangeVars & { workspace: string }): string {
+  assertSafeRuleValues({ workspace: vars.workspace });
+  const range = codeReviewRange(vars);
+  const diffs = ['', '--stat ', '--name-only ', '--name-status '].map((flag) => `diff ${flag}${range}`);
+  const subcommands = ['log', 'show', 'status', 'merge-base', 'rev-parse', 'ls-files'].map((cmd) => `${cmd}:*`);
+  const forms = [...diffs, `diff ${range} --:*`, ...subcommands];
+  const git = forms.map((form) => `Bash(git ${form})`);
+  const gitInWorkspace = forms.map((form) => `Bash(git -C ${vars.workspace} ${form})`);
   return ['Read(./**)', 'Grep', 'Glob', 'Agent', 'Task', ...git, ...gitInWorkspace].join(',');
 }
 
-// `git diff --no-index` diffs any two paths, so it could read files outside the repo.
+// `git diff --no-index` diffs any two paths, so it could read files outside the repo. The diff forms
+// granted cannot carry the flag, but log and show take any options.
 export function codeReviewDisallowedTools(): string {
   return [disallowedTools(), 'Bash(git *--no-index*)'].join(',');
 }

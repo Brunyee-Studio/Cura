@@ -4,7 +4,13 @@ import type { Anchor, Category, Finding, FindingMeta, Review, Severity } from '.
 const SUMMARY_MARKER = '<!-- cura:summary -->';
 const FINDING_MARKER_RE = /<!-- cura:finding (\{[\s\S]*?\}) -->/g;
 const CURA_MARKER_RE = /<!--(\s*)cura:/g;
-const FAILURE_LINE_RE = /^> ⚠️ Review failed for .*\n\n?/m;
+// Model text is neutralised, so it cannot carry these markers and pass for Cura's own sections.
+const FAILED_MARKER = '<!-- cura:review-failed -->';
+const FAILURE_LINE_RE = /^<!-- cura:review-failed -->\n> ⚠️ Review failed for .*\n\n?/m;
+// An older Cura's notice has no marker, but sits where model text never does: first, or under the heading alone.
+const LEGACY_FAILURE_LINE_RE = /^(## Cura review\n\n)?> ⚠️ Review failed for .*\n\n?/;
+const OPEN_START = '<!-- cura:open-findings -->';
+const OPEN_END = '<!-- cura:open-findings-end -->';
 
 const SEVERITIES: readonly Severity[] = ['P0', 'P1', 'P2'];
 const CATEGORIES: readonly Category[] = ['correctness', 'security', 'data-loss', 'performance', 'contract', 'convention', 'test', 'docs'];
@@ -17,9 +23,6 @@ const SCORE_LINE_RE = /^\*\*Confidence [1-5]\/5\*\* — (.*)$/m;
 const UNRESOLVED_LINE_RE = /\n\n> ⚠️ \d+ threads? Cura closed could not be resolved on GitHub and still counts? toward the score: (.*)\.$/m;
 const THREAD_LINK_RE = /\[thread\]\(([^)]*)\)/g;
 const COUNT_PART_RE = /^(\d+ P[012]|No open findings)$/;
-const SEVERITY_RUN_RE = new RegExp(`(?:\\n\\n### (?:${Object.values(SEVERITY_HEADINGS).join('|')})\\n- [^\\n]*(?:\\n- [^\\n]*)*)+`, 'g');
-/** Where each section that follows the open-finding links starts, in render order; the footer's rule always exists. */
-const AFTER_LINKS = [/\n\n### Resolved since last review\n/g, /\n\n### Dismissed\n/g, /\n\n<details><summary>Discarded \(/g, /\n\n> ⚠️ \d+ findings? could not be anchored/g, /\n\n---\n\n<sub>/g];
 
 export interface OpenFindingLink {
   severity: Severity;
@@ -109,58 +112,60 @@ export function renderSummary(input: SummaryInput): string {
 
   if (review.diagram.trim()) sections.push(`### Sequence diagram\n${fenced('mermaid', review.diagram.trim())}`);
 
-  sections.push(...severitySections(open));
-
+  const tail: string[] = [];
   if (input.resolved.length > 0) {
     const lines = input.resolved.map((r) => `- [\`${r.path}\`](${r.url}) — ${oneLine(r.note)}`);
-    sections.push(`### Resolved since last review\n${lines.join('\n')}`);
+    tail.push(`### Resolved since last review\n${lines.join('\n')}`);
   }
 
   if (input.dismissed.length > 0) {
     const lines = input.dismissed.map((d) => `- [thread](${d.url}) — ${oneLine(d.reason)}`);
-    sections.push(`### Dismissed\n${lines.join('\n')}`);
+    tail.push(`### Dismissed\n${lines.join('\n')}`);
   }
 
   if (review.discarded.length > 0) {
     const lines = review.discarded.map((d) => `- \`${d.location}\` — ${oneLine(d.candidate)} — ${oneLine(d.reason)}`);
-    sections.push(`<details><summary>Discarded (${review.discarded.length})</summary>\n\n${lines.join('\n')}\n\n</details>`);
+    tail.push(`<details><summary>Discarded (${review.discarded.length})</summary>\n\n${lines.join('\n')}\n\n</details>`);
   }
 
   if (input.unanchored > 0) {
     const noun = input.unanchored === 1 ? 'finding' : 'findings';
-    sections.push(`> ⚠️ ${input.unanchored} ${noun} could not be anchored to the diff — see the job summary.`);
+    tail.push(`> ⚠️ ${input.unanchored} ${noun} could not be anchored to the diff — see the job summary.`);
   }
 
-  sections.push('---', footer(input));
-  return `${SUMMARY_MARKER}\n${neutraliseMarkers(sections.join('\n\n'))}\n\n<!-- cura:reviewed-sha=${input.headSha} -->\n`;
+  tail.push('---', footer(input));
+  const body = [neutraliseMarkers(sections.join('\n\n')), openFindingsBlock(open), neutraliseMarkers(tail.join('\n\n'))].join('\n\n');
+  return `${SUMMARY_MARKER}\n${body}\n\n<!-- cura:reviewed-sha=${input.headSha} -->\n`;
 }
 
 /** Keeps the previous summary (and its confidence line) visible, flagged as stale; replaces any earlier failure notice. */
 export function renderFailure(input: { previousBody: string | null; runUrl: string; headSha: string }): string {
-  const head = `> ⚠️ Review failed for \`${short(input.headSha)}\` — [run](${input.runUrl}).`;
+  const head = `${FAILED_MARKER}\n> ⚠️ Review failed for \`${short(input.headSha)}\` — [run](${input.runUrl}).`;
   if (input.previousBody === null) return `${SUMMARY_MARKER}\n## Cura review\n\n${head}\n`;
-  const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '');
+  const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '').replace(LEGACY_FAILURE_LINE_RE, '$1');
   return `${SUMMARY_MARKER}\n${head} Showing the previous result.\n\n${rest}`;
 }
 
 /**
  * The summary with only its score line and open-finding links recomputed; everything else, the reviewed-sha
- * marker included, is kept byte for byte. Null for a failed review's summary, which the next review replaces.
+ * marker included, is kept byte for byte. Null for a failed review's summary, which the next review replaces, and for
+ * one without the open-findings markers (an older Cura's), whose links cannot be told from model text.
  */
 export function rescoreSummary(body: string, score: number, open: OpenFindingLink[]): string | null {
   const line = SCORE_LINE_RE.exec(body);
-  if (line === null || FAILURE_LINE_RE.test(body)) return null;
+  if (line === null || FAILURE_LINE_RE.test(body) || !body.includes(OPEN_START) || !body.includes(OPEN_END)) return null;
   const parts = line[1].split(' · ');
   const noteAt = parts.findIndex((p) => !COUNT_PART_RE.test(p));
   const riskNote = noteAt === -1 ? '' : parts.slice(noteAt).join(' · ');
   const rescored = keepOpenUnresolved(body.replace(SCORE_LINE_RE, () => neutraliseMarkers(scoreLine(score, open, riskNote))), open);
+  const start = rescored.indexOf(OPEN_START);
+  const end = rescored.indexOf(OPEN_END, start) + OPEN_END.length;
+  return rescored.slice(0, start) + openFindingsBlock(open) + rescored.slice(end);
+}
 
-  const links = severitySections(open).map((section) => `\n\n${neutraliseMarkers(section)}`).join('');
-  // Model text comes before Cura's own sections, so the last match is Cura's.
-  const existing = [...rescored.matchAll(SEVERITY_RUN_RE)].at(-1);
-  if (existing?.index !== undefined) return rescored.slice(0, existing.index) + links + rescored.slice(existing.index + existing[0].length);
-  const at = Math.min(...AFTER_LINKS.map((re) => [...rescored.matchAll(re)].at(-1)?.index ?? Infinity));
-  return rescored.slice(0, at) + links + rescored.slice(at);
+/** The open-finding links between Cura's markers, so a re-score replaces exactly them. */
+function openFindingsBlock(open: OpenFindingLink[]): string {
+  return [OPEN_START, ...severitySections(open).map(neutraliseMarkers), OPEN_END].join('\n\n');
 }
 
 /** Drops threads a human has since resolved from the unresolved warning; the re-score cannot know of new ones. */

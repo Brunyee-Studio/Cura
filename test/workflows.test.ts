@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { gitTestEnv } from './git-env.ts';
 import { runBlocks } from './yaml-lines.ts';
 
 const root = join(import.meta.dirname, '..');
@@ -255,7 +256,7 @@ describe('release.yml', () => {
 
     function withRepo(fn: (git: (...args: string[]) => string, move: () => string) => void) {
       const dir = mkdtempSync(join(tmpdir(), 'cura-release-'));
-      const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+      const env = gitTestEnv();
       const git = (...args: string[]) =>
         execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: join(dir, 'repo'), env, encoding: 'utf8' }).trim();
       try {

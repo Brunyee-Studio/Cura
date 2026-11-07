@@ -7,14 +7,14 @@ import { main, type Deps } from '../src/cli.ts';
 import type { GitHub } from '../src/github.ts';
 import { matchGlob } from '../src/plan.ts';
 import type { FileFact, Finding, Review, Thread } from '../src/types.ts';
+import { gitTestEnv } from './git-env.ts';
 import { makeIo } from './io.ts';
 
 // End-to-end dry run: a real git repo and the real CLI steps (context → check → publish);
 // only `ocr` and GitHub are faked.
 
 const BOT = 'github-actions[bot]';
-// Keeps the user's global/system git config (hooks, signing, diff settings) out of the run.
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+const GIT_ENV = gitTestEnv();
 
 interface Call {
   method: string;
