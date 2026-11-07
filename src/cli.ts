@@ -247,10 +247,11 @@ function prompt(env: Env, io: Io): void {
   const level = env.CURA_CODE_REVIEW || 'off';
   if (level === 'off') return;
   const workspace = env.GITHUB_WORKSPACE || process.cwd();
-  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools(workspace), '--disallowedTools', codeReviewDisallowedTools()];
+  const range = { base: state.base, mode: state.mode, prevSha: state.prevSha };
+  const codeReviewArgs = ['--allowedTools', codeReviewAllowedTools({ ...range, workspace }), '--disallowedTools', codeReviewDisallowedTools()];
   if (model) codeReviewArgs.push('--model', model);
   setOutputs(env, io, {
-    code_review_prompt: codeReviewPrompt({ level, base: state.base, mode: state.mode, prevSha: state.prevSha }),
+    code_review_prompt: codeReviewPrompt({ ...range, level }),
     code_review_args: codeReviewArgs.map(shellQuote).join(' '),
   });
 }

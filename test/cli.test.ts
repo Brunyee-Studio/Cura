@@ -820,7 +820,7 @@ describe('prompt', () => {
       expect(readFileSync(join(ctx, 'lead-prompt.md'), 'utf8')).toContain('CODE REVIEW PASS: on');
       expect(parseShell(value('code_review_args')!)).toEqual([
         '--allowedTools',
-        codeReviewAllowedTools('/home/runner/work/o/r'),
+        codeReviewAllowedTools({ workspace: '/home/runner/work/o/r', base: 'main', mode: 'full', prevSha: null }),
         '--disallowedTools',
         codeReviewDisallowedTools(),
         '--model',
