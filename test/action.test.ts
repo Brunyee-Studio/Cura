@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test } from 'vitest';
+import { gitTestEnv } from './git-env.ts';
 import { runBlocks } from './yaml-lines.ts';
 
 const root = join(import.meta.dirname, '..');
@@ -147,7 +148,7 @@ describe('action.yml', () => {
     const cleanup = steps().find((s) => s.key === 'Remove Claude Code git credentials')!.text.split('\n');
     const script = runBlocks(cleanup)[0]!.map((l) => l.trim()).join('\n');
     const repo = mkdtempSync(join(tmpdir(), 'cura-action-'));
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: gitTestEnv() });
     try {
       git('init', '-q');
       git('remote', 'add', 'origin', 'https://x-access-token:SECRET@github.com/o/r.git');
@@ -157,7 +158,7 @@ describe('action.yml', () => {
       git('config', '--local', 'http.sslVerify', 'true');
       execFileSync('bash', ['-c', script], {
         cwd: repo,
-        env: { ...process.env, GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r' },
+        env: gitTestEnv({ GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: 'o/r' }),
       });
       const config = git('config', '--local', '--list');
       expect(config).not.toContain('SECRET');
