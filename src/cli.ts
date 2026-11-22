@@ -424,6 +424,11 @@ async function runWatch(env: Env, io: Io): Promise<never> {
       },
       save: (s) => saveState(join(ctxDir, WATCH_FILE), s),
       log: io.stdout,
+      onStop: (handler) =>
+        process.once('SIGTERM', () => {
+          handler();
+          process.exit(0);
+        }),
     },
   );
 }

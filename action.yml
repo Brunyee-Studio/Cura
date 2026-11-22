@@ -313,7 +313,13 @@ runs:
       env:
         CURA_CTX: ${{ runner.temp }}/cura
       run: |
-        kill "$(cat "$CURA_CTX/watchdog.pid")" 2>/dev/null || true
+        pid="$(cat "$CURA_CTX/watchdog.pid")"
+        kill "$pid" 2>/dev/null || true
+        # It takes a last look on SIGTERM; give it up to 5 s to log and save it.
+        for _ in {1..50}; do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.1
+        done
         echo "::group::Claude Code watchdog"
         cat "$CURA_CTX/watchdog.log" "$CURA_CTX/watchdog.json" 2>/dev/null || true
         echo "::endgroup::"

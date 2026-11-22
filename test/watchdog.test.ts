@@ -39,6 +39,7 @@ function fakeDeps(opts: { until: number; writes?: number[]; alive?: (at: number,
   const saved: { at: number; state: WatchState }[] = [];
   const kills: { at: number; pid: number; signal: string }[] = [];
   const logs: string[] = [];
+  let stop: (() => void) | undefined;
   const deps: WatchDeps = {
     now: () => clock,
     sleep: async (ms) => {
@@ -59,9 +60,17 @@ function fakeDeps(opts: { until: number; writes?: number[]; alive?: (at: number,
     },
     save: (state) => void saved.push({ at: clock - START, state }),
     log: (line) => void logs.push(line),
+    onStop: (handler) => {
+      stop = handler;
+    },
   };
   const run = (idleMs: number) => expect(watch({ idleMs, pollMs: 30_000 }, deps)).rejects.toThrow('end of test');
-  return { run, saved, kills, logs, last: () => saved.at(-1)!.state };
+  /** Moves the clock on and stops the watchdog the way the action does. */
+  const stopAt = (ms: number) => {
+    clock = START + ms;
+    stop!();
+  };
+  return { run, saved, kills, logs, stopAt, last: () => saved.at(-1)!.state };
 }
 
 /** pid 942 runs until killed. */
@@ -140,6 +149,30 @@ describe('watch', () => {
       `${t(120_000)} dir=${root} transcripts=2 lastActivity=${t(60_000)}`,
       `${t(120_000)} silent for 1 minute: stopped 1 Claude Code process(es)`,
     ]);
+  });
+
+  test('takes a last look when stopped, so a session shorter than a poll shows up', async () => {
+    // The session runs from 33 s to 50 s, between two polls, as on a short self-hosted review.
+    const fake = fakeDeps({ until: 30_000, writes: [START + 34_000, START + 50_000], alive: lead });
+    await fake.run(3 * MINUTE);
+    fake.stopAt(50_500);
+    const t = (ms: number) => new Date(START + ms).toISOString();
+    expect(fake.logs.slice(-4)).toEqual([
+      `${t(50_500)} transcript ${join(root, '34000.jsonl')}`,
+      `${t(50_500)} transcript ${join(root, '50000.jsonl')}`,
+      `${t(50_500)} dir=${root} transcripts=2 lastActivity=${t(50_000)}`,
+      `${t(50_500)} stopped after the Claude steps`,
+    ]);
+    expect(fake.last()).toMatchObject({ stalled: false, lastActivity: t(50_000) });
+  });
+
+  test('keeps a stall on record when stopped before a session writes again', async () => {
+    const fake = fakeDeps({ until: 2 * MINUTE, alive: lead });
+    await fake.run(MINUTE);
+    const saves = fake.saved.length;
+    fake.stopAt(2 * MINUTE + 5_000);
+    expect(fake.saved).toHaveLength(saves);
+    expect(fake.last()).toMatchObject({ stalled: true, stopped: 1 });
   });
 
   test('records a stall it cannot stop', async () => {

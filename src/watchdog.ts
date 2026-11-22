@@ -33,6 +33,8 @@ export interface WatchDeps {
   save: (state: WatchState) => void;
   /** One line to the watchdog's log, which the stop step prints into the job log. */
   log: (line: string) => void;
+  /** Registers what to run when the action stops the watchdog; the caller exits after it. */
+  onStop: (handler: () => void) => void;
 }
 
 export interface Transcript {
@@ -44,17 +46,19 @@ export interface Transcript {
 export const KILL_GRACE_MS = 10_000;
 
 /**
- * Watches until the action kills it after the Claude steps. Each time the sessions go silent for `idleMs`, it stops
- * the Claude Code processes it finds and starts a fresh idle window, so a later step is watched too. A stall stays
- * on record until a session writes again, so publish never blames a later failure on an earlier stall.
+ * Watches until the action stops it after the Claude steps, with one last look then so even a session shorter than a
+ * poll shows in the log. Each time the sessions go silent for `idleMs`, it stops the Claude Code processes it finds
+ * and starts a fresh idle window, so a later step is watched too. A stall stays on record until a session writes
+ * again, so publish never blames a later failure on an earlier stall.
  */
 export async function watch(opts: { idleMs: number; pollMs: number }, deps: WatchDeps): Promise<never> {
   const start = deps.now();
   let baseline = start;
   let stalledAt: number | null = null;
   const seen = new Set<string>();
-  for (;;) {
-    await deps.sleep(opts.pollMs);
+
+  /** Logs what is there now and returns the state, with the time it was taken. */
+  const observe = () => {
     const { dir, files } = deps.transcripts(start);
     const newest = files[0]?.mtime ?? 0;
     if (stalledAt !== null && newest > stalledAt) stalledAt = null;
@@ -73,6 +77,18 @@ export async function watch(opts: { idleMs: number; pollMs: number }, deps: Watc
       deps.log(`${at} transcript ${file.path}`);
     }
     deps.log(`${at} dir=${dir} transcripts=${files.length} lastActivity=${state.lastActivity}`);
+    return { state, last, at };
+  };
+
+  deps.onStop(() => {
+    const { state, at } = observe();
+    if (stalledAt === null) deps.save(state);
+    deps.log(`${at} stopped after the Claude steps`);
+  });
+
+  for (;;) {
+    await deps.sleep(opts.pollMs);
+    const { state, last, at } = observe();
     if (deps.now() - last < opts.idleMs) {
       if (stalledAt === null) deps.save(state);
       continue;
