@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 import {
   allowedTools,
@@ -25,6 +25,7 @@ import { rescore, type RescoreResult } from './rescore.ts';
 import { loadSchema } from './schema.ts';
 import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings, type ReviewTrace } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
+import { claudeProcesses, describeWatch, minutes, saveState, transcriptsUnder, watch, WATCH_FILE, type WatchState } from './watchdog.ts';
 
 type Env = NodeJS.ProcessEnv;
 
@@ -61,6 +62,7 @@ commands:
   context                       gather PR context into $CURA_CTX
   prompt                        render the lead prompt, agents and tool rules
   code-review                   save the /code-review pass's result ($CURA_CODE_REVIEW_EXECUTION_FILE) for the lead
+  watch                         stop Claude Code after $CURA_IDLE_MINUTES without a transcript write (run in the background)
   check [--ctx <dir>] [--plan]  validate the review draft (or, with --plan, the scope plan) in <dir>/drafts/
   publish                       publish the review ($CURA_EXECUTION_FILE, else $REVIEW) to the PR
   rescore                       recompute the summary's score from the open Cura threads (no model)
@@ -112,6 +114,8 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
       return saveCodeReview(env, io);
     case 'check':
       return check(args, env, io);
+    case 'watch':
+      return runWatch(env, io);
     case 'publish':
       return runPublish(env, io, d);
     case 'rescore':
@@ -389,6 +393,42 @@ function planCaps(ctxDir: string) {
   return { configScopes: config.scopes ?? [], maxFiles, maxLines };
 }
 
+// ── watch ────────────────────────────────────────────────────────────────────
+
+const WATCH_POLL_MS = 30_000;
+
+/** Runs until the session goes silent; the action kills it once the Claude steps end. */
+async function runWatch(env: Env, io: Io): Promise<void> {
+  const ctxDir = ctxFromEnv(env);
+  const idleMinutes = positiveInt(env, 'CURA_IDLE_MINUTES', 5);
+  const projects = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude'), 'projects');
+  const job = { runId: required(env, 'GITHUB_RUN_ID'), runnerTemp: required(env, 'RUNNER_TEMP') };
+  const state = await watch(
+    { idleMs: idleMinutes * 60_000, pollMs: WATCH_POLL_MS },
+    {
+      now: Date.now,
+      sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+      transcripts: (since) => transcriptsUnder(projects, since),
+      findClaude: () => claudeProcesses('/proc', job),
+      kill: (pid, signal) => {
+        try {
+          process.kill(pid, signal);
+        } catch {
+          // already gone
+        }
+      },
+      save: (s) => saveState(join(ctxDir, WATCH_FILE), s),
+    },
+  );
+  io.stdout(describeWatch(state));
+}
+
+/** What the watchdog last saw; null when it did not run. */
+function readWatch(ctxDir: string): WatchState | null {
+  const file = join(ctxDir, WATCH_FILE);
+  return existsSync(file) ? ((parseJson(readFileSync(file, 'utf8')) as WatchState | undefined) ?? null) : null;
+}
+
 // ── publish ──────────────────────────────────────────────────────────────────
 
 async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
@@ -414,7 +454,7 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
   }
   if (executionFile !== null) reportTrace(env, io, executionFile, state, review);
 
-  const markFailed = () => {
+  const markFailed = (reason?: string) => {
     const previous = readJson<{ body?: string }>(ctxDir, 'summary-comment.json');
     return publishFailure({
       gh,
@@ -424,11 +464,16 @@ async function runPublish(env: Env, io: Io, d: Deps): Promise<void> {
       previousBody: previous.body ?? null,
       runUrl,
       headSha: state.headSha,
+      reason,
     });
   };
 
   if (review === undefined) {
-    const summaryUrl = await markFailed();
+    // A silent session logs nothing, so say what the watchdog saw: a stall, or the API errors behind a failure.
+    const watched = agentSucceeded ? null : readWatch(ctxDir);
+    if (watched !== null) io.stdout(`::error::Cura: ${describeWatch(watched)}`);
+    const stopped = watched?.stopped ? ', so Cura stopped it' : '';
+    const summaryUrl = await markFailed(watched?.stalled ? `Claude Code went silent for ${minutes(watched.idleMinutes)}${stopped}.` : undefined);
     setOutputs(env, io, { score: '0', findings: '0', summary_url: summaryUrl });
     return io.exit(1);
   }

@@ -134,6 +134,25 @@ describe('action.yml', () => {
     expect(step('claude')).toContain('allowed_bots: ${{ inputs.allowed_bots }}');
   });
 
+  // A stalled session logs nothing, so a watchdog stops it on silence instead of the job timeout (src/watchdog.ts).
+  test('watches both Claude steps in the background and stops the watchdog before publish', () => {
+    const keys = steps().map((s) => s.key);
+    const start = step('watchdog');
+    expect(keys.indexOf('watchdog')).toBeLessThan(keys.indexOf('code_review'));
+    expect(start).toContain("if: steps.context.outputs.skip_agent == 'false'");
+    expect(start).toContain('CURA_IDLE_MINUTES: ${{ inputs.idle_timeout_minutes }}');
+    expect(start).toContain('if [[ ! "$CURA_IDLE_MINUTES" =~ ^[1-9][0-9]*$ ]]; then');
+    // Backgrounded with its output in a file, so the step does not wait on it.
+    expect(start).toContain('node "$GITHUB_ACTION_PATH/src/cli.ts" watch < /dev/null > "$CURA_CTX/watchdog.log" 2>&1 &');
+    expect(start).toContain('echo "$!" > "$CURA_CTX/watchdog.pid"');
+    const stop = steps().findIndex((s) => s.key === 'Stop Claude Code watchdog');
+    expect(stop).toBeGreaterThan(keys.indexOf('claude'));
+    expect(stop).toBeLessThan(keys.indexOf('publish'));
+    expect(steps()[stop]!.text).toContain("if: always() && steps.watchdog.outcome == 'success'");
+    expect(steps()[stop]!.text).toContain('kill "$(cat "$CURA_CTX/watchdog.pid")"');
+    expect(action).toMatch(/^ {2}idle_timeout_minutes:\n(?: {4}.*\n)* {4}default: '5'$/m);
+  });
+
   test("removes claude-code-action's git credentials right after the Claude step, always", () => {
     const keys = steps().map((s) => s.key);
     const cleanup = steps()[keys.indexOf('claude') + 1]!;

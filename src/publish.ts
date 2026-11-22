@@ -51,6 +51,8 @@ export interface PublishFailureOptions {
   previousBody: string | null;
   runUrl: string;
   headSha: string;
+  /** One sentence on why, when Cura knows it. */
+  reason?: string;
 }
 
 type LineAnchor = Extract<Anchor, { kind: 'line' }>;
@@ -126,7 +128,7 @@ export async function publish(opts: PublishOptions): Promise<PublishResult> {
 
 /** Marks the summary comment as failed, keeping the previous result visible. Returns the summary URL. */
 export async function publishFailure(opts: PublishFailureOptions): Promise<string> {
-  const body = renderFailure({ previousBody: opts.previousBody, runUrl: opts.runUrl, headSha: opts.headSha });
+  const body = renderFailure({ previousBody: opts.previousBody, runUrl: opts.runUrl, headSha: opts.headSha, reason: opts.reason });
   return writeSummary(opts, opts.summaryId, body);
 }
 

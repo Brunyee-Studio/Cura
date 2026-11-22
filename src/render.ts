@@ -139,8 +139,9 @@ export function renderSummary(input: SummaryInput): string {
 }
 
 /** Keeps the previous summary (and its confidence line) visible, flagged as stale; replaces any earlier failure notice. */
-export function renderFailure(input: { previousBody: string | null; runUrl: string; headSha: string }): string {
-  const head = `${FAILED_MARKER}\n> ⚠️ Review failed for \`${short(input.headSha)}\` — [run](${input.runUrl}).`;
+export function renderFailure(input: { previousBody: string | null; runUrl: string; headSha: string; reason?: string }): string {
+  const reason = input.reason ? ` ${input.reason}` : '';
+  const head = `${FAILED_MARKER}\n> ⚠️ Review failed for \`${short(input.headSha)}\` — [run](${input.runUrl}).${reason}`;
   if (input.previousBody === null) return `${SUMMARY_MARKER}\n## Cura review\n\n${head}\n`;
   const rest = input.previousBody.replace(SUMMARY_MARKER, '').replace(FAILURE_LINE_RE, '').replace(/^\n+/, '').replace(LEGACY_FAILURE_LINE_RE, '$1');
   return `${SUMMARY_MARKER}\n${head} Showing the previous result.\n\n${rest}`;

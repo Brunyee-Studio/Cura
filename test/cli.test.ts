@@ -506,6 +506,49 @@ describe('publish', () => {
     expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Review failed');
   });
 
+  describe('watchdog report', () => {
+    const watched = {
+      startedAt: '2026-11-22T05:01:47.000Z',
+      lastActivity: '2026-11-22T05:02:10.000Z',
+      idleMinutes: 5,
+      stalled: true,
+      stopped: 1,
+      lastApiError: '529 Overloaded (retry 3 of 10)',
+    };
+
+    test('a stalled session logs what the watchdog saw and says so in the summary', async () => {
+      seedCtx();
+      writeCtx('watchdog.json', watched);
+      const { gh, calls } = fakeGitHub();
+      const { io, code, text } = makeIo();
+      await main(['publish'], env({ AGENT_OUTCOME: 'failure' }), io, { createGitHub: () => gh });
+      expect(code()).toBe(1);
+      expect(text()).toContain(
+        '::error::Cura: Claude Code wrote nothing for 5 minutes (last activity 2026-11-22T05:02:10.000Z), so Cura stopped it. Its last API error: 529 Overloaded (retry 3 of 10).',
+      );
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).toContain('Claude Code went silent for 5 minutes, so Cura stopped it.');
+    });
+
+    test('a cancelled session that had not stalled logs its last activity, with no reason in the summary', async () => {
+      seedCtx();
+      writeCtx('watchdog.json', { ...watched, stalled: false, stopped: 0 });
+      const { gh, calls } = fakeGitHub();
+      const { io, text } = makeIo();
+      await main(['publish'], env({ AGENT_OUTCOME: 'cancelled' }), io, { createGitHub: () => gh });
+      expect(text()).toContain("::error::Cura: Claude Code's last activity was at 2026-11-22T05:02:10.000Z.");
+      expect(sentBody(calls, 'POST', '/repos/o/r/issues/7/comments')).not.toContain('went silent');
+    });
+
+    test('is not reported when the agent succeeded', async () => {
+      seedCtx();
+      writeCtx('watchdog.json', watched);
+      const { gh } = fakeGitHub();
+      const { io, text } = makeIo();
+      await main(['publish'], env({ REVIEW: 'not json {', AGENT_OUTCOME: 'success' }), io, { createGitHub: () => gh });
+      expect(text()).not.toContain('Claude Code wrote nothing');
+    });
+  });
+
   test('unset AGENT_OUTCOME fails closed even with a valid REVIEW', async () => {
     seedCtx();
     const { gh, calls } = fakeGitHub();
