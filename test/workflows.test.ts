@@ -193,10 +193,12 @@ describe('review.yml', () => {
       'max_files_per_scope',
       'max_lines_per_scope',
       'timeout_minutes',
+      'idle_timeout_minutes',
       'allowed_bots',
       'allow_forks',
     ]);
     expect(reviewInputs.get('timeout_minutes')).toBe('20');
+    expect(reviewInputs.get('idle_timeout_minutes')).toBe('10');
   });
 
   test('every input is forwarded to the action or used by the job', () => {

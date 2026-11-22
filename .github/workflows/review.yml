@@ -46,6 +46,10 @@ on:
         description: Timeout for the review job.
         type: number
         default: 20
+      idle_timeout_minutes:
+        description: Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so the review fails fast.
+        type: number
+        default: 10
       allowed_bots:
         description: Comma-separated bot logins allowed to trigger the review (e.g. `dependabot[bot]`).
         type: string
@@ -166,6 +170,7 @@ jobs:
           max_lines_per_scope: ${{ inputs.max_lines_per_scope }}
           allowed_bots: ${{ inputs.allowed_bots }}
           allow_forks: ${{ inputs.allow_forks }}
+          idle_timeout_minutes: ${{ inputs.idle_timeout_minutes }}
 
   rescore:
     name: Cura re-score

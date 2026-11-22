@@ -78,6 +78,10 @@ inputs:
       Runs triggered by a bot, e.g. Dependabot, fail the review step unless the bot is listed here.
     required: false
     default: ''
+  idle_timeout_minutes:
+    description: Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so the review fails fast.
+    required: false
+    default: '10'
 
   mode:
     description: >-
@@ -219,6 +223,26 @@ runs:
         node "$GITHUB_ACTION_PATH/src/cli.ts" prompt
         echo "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" >> "$GITHUB_ENV"
 
+    # A stalled session (a hung API request, say) logs nothing and would run to
+    # the job timeout. This background watchdog stops Claude Code once its session
+    # transcripts go unwritten for idle_timeout_minutes, so the review fails within
+    # minutes; publish reports what it saw (src/watchdog.ts). It covers both Claude
+    # steps and is stopped after them.
+    - name: Start Claude Code watchdog
+      id: watchdog
+      if: steps.context.outputs.skip_agent == 'false'
+      shell: bash
+      env:
+        CURA_CTX: ${{ runner.temp }}/cura
+        CURA_IDLE_MINUTES: ${{ inputs.idle_timeout_minutes }}
+      run: |
+        if [[ ! "$CURA_IDLE_MINUTES" =~ ^[1-9][0-9]*$ ]]; then
+          echo "::error::The 'idle_timeout_minutes' input must be a positive whole number."
+          exit 1
+        fi
+        node "$GITHUB_ACTION_PATH/src/cli.ts" watch < /dev/null > "$CURA_CTX/watchdog.log" 2>&1 &
+        echo "$!" > "$CURA_CTX/watchdog.pid"
+
     # Claude Code's built-in /code-review skill over the diff the lead reviews.
     # It reads untrusted PR content too, so it gets read-only git and file tools
     # and no GitHub tools (see src/agents.ts); its findings reach the lead as
@@ -282,6 +306,23 @@ runs:
         for key in $headers; do
           git config --local --unset-all "$key" || true
         done
+
+    - name: Stop Claude Code watchdog
+      if: always() && steps.watchdog.outcome == 'success'
+      shell: bash
+      env:
+        CURA_CTX: ${{ runner.temp }}/cura
+      run: |
+        pid="$(cat "$CURA_CTX/watchdog.pid")"
+        kill "$pid" 2>/dev/null || true
+        # It takes a last look on SIGTERM; give it up to 5 s to log and save it.
+        for _ in {1..50}; do
+          kill -0 "$pid" 2>/dev/null || break
+          sleep 0.1
+        done
+        echo "::group::Claude Code watchdog"
+        cat "$CURA_CTX/watchdog.log" "$CURA_CTX/watchdog.json" 2>/dev/null || true
+        echo "::endgroup::"
 
     # Runs even when the review failed so the summary comment reports it. It
     # fails closed: anything but a successful agent outcome publishes a failure.

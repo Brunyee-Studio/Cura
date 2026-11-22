@@ -118,6 +118,7 @@ Comment `/cura` on the PR to review it again. You must be an owner, member or co
 | `max_files_per_scope` | number | `12` | Chunk cap: files per review scope |
 | `max_lines_per_scope` | number | `1500` | Chunk cap: changed lines (added + removed) per review scope |
 | `timeout_minutes` | number | `20` | Timeout for the review job |
+| `idle_timeout_minutes` | number | `10` | Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so a stalled review fails fast (see [stalled reviews](#stalled-reviews)) |
 | `allowed_bots` | string | `''` | Comma-separated bot logins allowed to trigger the review |
 | `allow_forks` | boolean | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 
@@ -134,6 +135,14 @@ GitHub Actions has no event for resolving or reopening a review thread, so the s
 The re-score job starts no Claude session and checks nothing out. It recomputes the score from the open Cura threads and edits only the summary's score line and finding links. Everything else stays as the last review wrote it, including the reviewed SHA, so the next push is still reviewed incrementally. Nothing is edited when the score and links are unchanged, when the PR has no summary yet, or when the last review failed.
 
 The job runs for same-repository PRs only. It has its own concurrency group (`cura-rescore-<pr>`), so it never cancels a review. If a review is running, the review rewrites the summary when it finishes. The job needs only `pull-requests: write`.
+
+### Stalled reviews
+
+claude-code-action hides the session's messages from the job log, so a stalled session (a hung API request, say) prints nothing until the job timeout cancels it. Cura runs a watchdog beside the Claude steps instead. It watches the session transcripts that Claude Code writes under `~/.claude/projects` as each message, tool result and API retry lands, subagents included. When nothing is written for `idle_timeout_minutes` (default 10), it stops the Claude Code process and the review fails straight away. It then keeps watching, so a stall in the `/code-review` pass does not leave the review step unwatched. A single long reply or tool call writes nothing until it finishes, so keep the limit well above the longest one you expect.
+
+The watchdog looks in the job's own session directory, `~/.claude/projects/<workspace path with each non-alphanumeric character as ->`, where Claude Code keeps the transcripts of a session run in the workspace. Each runner has its own workspace, so another job's review on a shared self-hosted host does not count as activity. Until that directory exists, or if Claude Code names it differently, the watchdog falls back to the whole of `~/.claude/projects`. Then another job's review under the same `HOME` can hide a stall until it finishes. The stop step prints the watchdog's log (the directory watched, each transcript found and the last activity on every poll) in a "Claude Code watchdog" group.
+
+The failed run's publish step then logs what the watchdog saw: the last activity time and Claude Code's last API error, such as a `429` rate limit or a `529` overload. The summary comment says the session went silent. A review that times out or fails for another reason logs the same details. Stopping the process needs Linux's `/proc`; on other runners the watchdog still reports the stall, and the job timeout ends the run.
 
 ## Using the composite action directly
 
@@ -193,6 +202,7 @@ To re-score on a submitted review and on close, add a second job that runs the a
 | `allow_forks` | no | `false` | Review cross-repository PRs (unsafe on self-hosted runners) |
 | `bot_login` | no | `github-actions` | Author login whose marked threads Cura owns (set it when `github_token` is not the default token) |
 | `allowed_bots` | no | `''` | Comma-separated bot logins allowed to trigger the review (passed to claude-code-action's `allowed_bots`) |
+| `idle_timeout_minutes` | no | `10` | Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so a stalled review fails fast |
 | `mode` | no | `review` | `review` runs the review; `rescore` only recomputes the existing summary's score and finding links from the open Cura threads (no model, no checkout, no outputs) |
 
 ### Action outputs

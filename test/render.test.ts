@@ -297,6 +297,17 @@ describe('renderFailure', () => {
     expect(twice).toContain('**Confidence 5/5**');
   });
 
+  test('states the reason on the notice line, and the next failure replaces it', () => {
+    const previous = renderSummary(summaryInput([]));
+    const reason = 'Claude Code went silent for 5 minutes, so Cura stopped it.';
+    const once = renderFailure({ previousBody: previous, runUrl: 'https://run/2', headSha: SHA, reason });
+    expect(once).toContain(`— [run](https://run/2). ${reason} Showing the previous result.`);
+    const twice = renderFailure({ previousBody: once, runUrl: 'https://run/3', headSha: SHA });
+    expect(twice).not.toContain(reason);
+    expect(twice.match(/Review failed/g)).toHaveLength(1);
+    expect(renderFailure({ previousBody: null, runUrl: 'https://run/2', headSha: SHA, reason })).toContain(`— [run](https://run/2). ${reason}\n`);
+  });
+
   test('without a previous body renders a minimal summary with the marker', () => {
     const out = renderFailure({ previousBody: null, runUrl: 'https://run/2', headSha: SHA });
     expect(out.startsWith('<!-- cura:summary -->\n## Cura review\n')).toBe(true);
