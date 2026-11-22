@@ -31,7 +31,7 @@ jobs:
     concurrency:
       group: cura-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 20
     permissions:
       contents: write
@@ -72,6 +72,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           pr: ${{ github.event.pull_request.number || github.event.issue.number }}
           code_review: medium
+          idle_timeout_minutes: 3
 
   rescore:
     name: Cura re-score
