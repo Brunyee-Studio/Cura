@@ -115,7 +115,7 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
     case 'check':
       return check(args, env, io);
     case 'watch':
-      return runWatch(env, io);
+      return runWatch(env);
     case 'publish':
       return runPublish(env, io, d);
     case 'rescore':
@@ -397,13 +397,13 @@ function planCaps(ctxDir: string) {
 
 const WATCH_POLL_MS = 30_000;
 
-/** Runs until the session goes silent; the action kills it once the Claude steps end. */
-async function runWatch(env: Env, io: Io): Promise<void> {
+/** Runs until the action kills it once the Claude steps end. */
+async function runWatch(env: Env): Promise<never> {
   const ctxDir = ctxFromEnv(env);
   const idleMinutes = positiveInt(env, 'CURA_IDLE_MINUTES', 5);
   const projects = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude'), 'projects');
   const job = { runId: required(env, 'GITHUB_RUN_ID'), runnerTemp: required(env, 'RUNNER_TEMP') };
-  const state = await watch(
+  return watch(
     { idleMs: idleMinutes * 60_000, pollMs: WATCH_POLL_MS },
     {
       now: Date.now,
@@ -420,7 +420,6 @@ async function runWatch(env: Env, io: Io): Promise<void> {
       save: (s) => saveState(join(ctxDir, WATCH_FILE), s),
     },
   );
-  io.stdout(describeWatch(state));
 }
 
 /** What the watchdog last saw; null when it did not run. */

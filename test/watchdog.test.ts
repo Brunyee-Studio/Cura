@@ -28,38 +28,46 @@ afterEach(() => {
 const MINUTE = 60_000;
 const START = Date.parse('2026-11-22T05:01:47Z');
 
-/** A fake clock and process table: `writes` are transcript mtimes, visible once the clock reaches them. */
-function fakeDeps(opts: { writes?: number[]; pids?: number[]; survivors?: number[] } = {}) {
+/**
+ * A fake clock and process table. `writes` are transcript mtimes, visible once the clock reaches them; `alive` says
+ * which pids exist at a time and whether a kill took. `watch` never returns, so sleep throws `until` ms after the start.
+ */
+function fakeDeps(opts: { until: number; writes?: number[]; alive?: (at: number, killed: Set<number>) => number[] }) {
   let clock = START;
-  let killed = false;
-  const saved: WatchState[] = [];
-  const kills: [number, string][] = [];
+  const killed = new Set<number>();
+  const saved: { at: number; state: WatchState }[] = [];
+  const kills: { at: number; pid: number; signal: string }[] = [];
   const deps: WatchDeps = {
     now: () => clock,
     sleep: async (ms) => {
       clock += ms;
+      if (clock - START > opts.until) throw new Error('end of test');
     },
     transcripts: (since) =>
       (opts.writes ?? [])
         .filter((t) => t >= since && t <= clock)
         .map((mtime): Transcript => ({ path: join(root, 'none.jsonl'), mtime }))
         .sort((a, b) => b.mtime - a.mtime),
-    findClaude: () => (killed ? (opts.survivors ?? []) : (opts.pids ?? [])),
+    findClaude: () => opts.alive?.(clock, killed) ?? [],
     kill: (pid, signal) => {
-      kills.push([pid, signal]);
-      killed = true;
+      kills.push({ at: clock - START, pid, signal });
+      killed.add(pid);
     },
-    save: (state) => void saved.push(state),
+    save: (state) => void saved.push({ at: clock - START, state }),
   };
-  return { deps, saved, kills, elapsed: () => clock - START };
+  const run = (idleMs: number) => expect(watch({ idleMs, pollMs: 30_000 }, deps)).rejects.toThrow('end of test');
+  return { run, saved, kills, last: () => saved.at(-1)!.state };
 }
+
+/** pid 942 runs until killed. */
+const lead = (_at: number, killed: Set<number>) => (killed.has(942) ? [] : [942]);
 
 describe('watch', () => {
   test('stops Claude Code once nothing has been written for the idle time', async () => {
-    const { deps, saved, kills, elapsed } = fakeDeps({ pids: [942] });
-    const state = await watch({ idleMs: 5 * MINUTE, pollMs: 30_000 }, deps);
-    expect(elapsed()).toBe(5 * MINUTE + KILL_GRACE_MS);
-    expect(state).toEqual({
+    const fake = fakeDeps({ until: 6 * MINUTE, alive: lead });
+    await fake.run(5 * MINUTE);
+    expect(fake.kills).toEqual([{ at: 5 * MINUTE, pid: 942, signal: 'SIGTERM' }]);
+    expect(fake.last()).toEqual({
       startedAt: '2026-11-22T05:01:47.000Z',
       lastActivity: '2026-11-22T05:01:47.000Z',
       idleMinutes: 5,
@@ -67,34 +75,58 @@ describe('watch', () => {
       stopped: 1,
       lastApiError: null,
     });
-    expect(kills).toEqual([[942, 'SIGTERM']]);
-    expect(saved.at(-1)).toEqual(state);
-    expect(saved.slice(0, -1).every((s) => !s.stalled)).toBe(true);
+    expect(fake.saved.filter((s) => s.at < 5 * MINUTE).every((s) => !s.state.stalled)).toBe(true);
   });
 
   test('each transcript write restarts the idle time', async () => {
-    const writes = [START + 4 * MINUTE, START + 8 * MINUTE];
-    const { deps, elapsed } = fakeDeps({ writes, pids: [942] });
-    const state = await watch({ idleMs: 5 * MINUTE, pollMs: 30_000 }, deps);
-    expect(state.lastActivity).toBe(new Date(START + 8 * MINUTE).toISOString());
-    expect(elapsed()).toBe(13 * MINUTE + KILL_GRACE_MS);
+    const fake = fakeDeps({ until: 14 * MINUTE, writes: [START + 4 * MINUTE, START + 8 * MINUTE], alive: lead });
+    await fake.run(5 * MINUTE);
+    expect(fake.kills.map((k) => k.at)).toEqual([13 * MINUTE]);
+    expect(fake.last().lastActivity).toBe(new Date(START + 8 * MINUTE).toISOString());
   });
 
   test('kills a process that outlives SIGTERM', async () => {
-    const { deps, kills } = fakeDeps({ pids: [942], survivors: [942] });
-    await watch({ idleMs: MINUTE, pollMs: 30_000 }, deps);
-    expect(kills).toEqual([
-      [942, 'SIGTERM'],
-      [942, 'SIGKILL'],
+    const fake = fakeDeps({ until: 2 * MINUTE, alive: () => [942] });
+    await fake.run(MINUTE);
+    expect(fake.kills.slice(0, 2)).toEqual([
+      { at: MINUTE, pid: 942, signal: 'SIGTERM' },
+      { at: MINUTE + KILL_GRACE_MS, pid: 942, signal: 'SIGKILL' },
     ]);
   });
 
-  test('reports a stall it cannot stop, and returns without waiting', async () => {
-    const { deps, kills, elapsed } = fakeDeps();
-    const state = await watch({ idleMs: MINUTE, pollMs: 30_000 }, deps);
-    expect(state).toMatchObject({ stalled: true, stopped: 0 });
-    expect(kills).toEqual([]);
-    expect(elapsed()).toBe(MINUTE);
+  test('keeps watching after a stall, so the next Claude step is watched too', async () => {
+    // The /code-review session (942) stalls at once; the lead (943) starts at 6 min, writes at 7 min, then stalls.
+    const alive = (at: number, killed: Set<number>) => [...(killed.has(942) ? [] : [942]), ...(at >= START + 6 * MINUTE && !killed.has(943) ? [943] : [])];
+    const fake = fakeDeps({ until: 20 * MINUTE, writes: [START + 7 * MINUTE], alive });
+    await fake.run(5 * MINUTE);
+    expect(fake.kills.map((k) => [k.at, k.pid, k.signal])).toEqual([
+      [5 * MINUTE, 942, 'SIGTERM'],
+      // Polls run 30 s apart from the end of the first stall's grace period.
+      [12 * MINUTE + KILL_GRACE_MS, 943, 'SIGTERM'],
+    ]);
+    expect(fake.last()).toMatchObject({ stalled: true, stopped: 1, lastActivity: new Date(START + 7 * MINUTE).toISOString() });
+  });
+
+  test('a new write clears the stall, so a later failure is not blamed on it', async () => {
+    const fake = fakeDeps({ until: 7 * MINUTE, writes: [START + 6 * MINUTE], alive: lead });
+    await fake.run(5 * MINUTE);
+    expect(fake.saved.some((s) => s.state.stalled)).toBe(true);
+    expect(fake.last()).toMatchObject({ stalled: false, lastActivity: new Date(START + 6 * MINUTE).toISOString() });
+  });
+
+  test('keeps the record of a stall it acted on when a later window finds nothing to stop', async () => {
+    const fake = fakeDeps({ until: 20 * MINUTE, alive: lead });
+    await fake.run(5 * MINUTE);
+    expect(fake.kills).toHaveLength(1);
+    expect(fake.last()).toMatchObject({ stalled: true, stopped: 1 });
+    expect(fake.saved.filter((s) => s.at > 5 * MINUTE)).toEqual([]);
+  });
+
+  test('records a stall it cannot stop', async () => {
+    const fake = fakeDeps({ until: 2 * MINUTE });
+    await fake.run(MINUTE);
+    expect(fake.kills).toEqual([]);
+    expect(fake.last()).toMatchObject({ stalled: true, stopped: 0 });
   });
 });
 

@@ -41,34 +41,45 @@ export interface Transcript {
 /** How long a stopped session gets to exit on SIGTERM before it is killed. */
 export const KILL_GRACE_MS = 10_000;
 
-/** Polls until the session has been silent for `idleMs`, then stops it and returns. The caller kills it when the session ends. */
-export async function watch(opts: { idleMs: number; pollMs: number }, deps: WatchDeps): Promise<WatchState> {
+/**
+ * Watches until the action kills it after the Claude steps. Each time the sessions go silent for `idleMs`, it stops
+ * the Claude Code processes it finds and starts a fresh idle window, so a later step is watched too. A stall stays
+ * on record until a session writes again, so publish never blames a later failure on an earlier stall.
+ */
+export async function watch(opts: { idleMs: number; pollMs: number }, deps: WatchDeps): Promise<never> {
   const start = deps.now();
+  let baseline = start;
+  let stalledAt: number | null = null;
   for (;;) {
     await deps.sleep(opts.pollMs);
     const files = deps.transcripts(start);
-    const last = Math.max(start, files[0]?.mtime ?? 0);
+    const newest = files[0]?.mtime ?? 0;
+    if (stalledAt !== null && newest > stalledAt) stalledAt = null;
+    const last = Math.max(baseline, newest);
     const state: WatchState = {
       startedAt: new Date(start).toISOString(),
       lastActivity: new Date(last).toISOString(),
       idleMinutes: opts.idleMs / 60_000,
-      stalled: deps.now() - last >= opts.idleMs,
+      stalled: false,
       stopped: 0,
       lastApiError: lastApiError(files.map((f) => f.path)),
     };
-    if (!state.stalled) {
-      deps.save(state);
+    if (deps.now() - last < opts.idleMs) {
+      if (stalledAt === null) deps.save(state);
       continue;
     }
     const pids = deps.findClaude();
-    for (const pid of pids) deps.kill(pid, 'SIGTERM');
-    state.stopped = pids.length;
-    deps.save(state);
+    // Nothing more to stop after a stall: keep its record rather than replace it with an empty one.
+    if (stalledAt === null || pids.length > 0) {
+      for (const pid of pids) deps.kill(pid, 'SIGTERM');
+      deps.save({ ...state, stalled: true, stopped: pids.length });
+      stalledAt = deps.now();
+    }
     if (pids.length > 0) {
       await deps.sleep(KILL_GRACE_MS);
       for (const pid of deps.findClaude()) deps.kill(pid, 'SIGKILL');
     }
-    return state;
+    baseline = deps.now();
   }
 }
 

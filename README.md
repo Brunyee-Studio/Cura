@@ -138,7 +138,7 @@ The job runs for same-repository PRs only. It has its own concurrency group (`cu
 
 ### Stalled reviews
 
-claude-code-action hides the session's messages from the job log, so a stalled session (a hung API request, say) prints nothing until the job timeout cancels it. Cura runs a watchdog beside the Claude steps instead. It watches the session transcripts that Claude Code writes under `~/.claude/projects` as each message, tool result and API retry lands, subagents included. When nothing is written for `idle_timeout_minutes` (default 5), it stops the Claude Code process and the review fails straight away.
+claude-code-action hides the session's messages from the job log, so a stalled session (a hung API request, say) prints nothing until the job timeout cancels it. Cura runs a watchdog beside the Claude steps instead. It watches the session transcripts that Claude Code writes under `~/.claude/projects` as each message, tool result and API retry lands, subagents included. When nothing is written for `idle_timeout_minutes` (default 5), it stops the Claude Code process and the review fails straight away. It then keeps watching, so a stall in the `/code-review` pass does not leave the review step unwatched.
 
 The failed run's publish step then logs what the watchdog saw: the last activity time and Claude Code's last API error, such as a `429` rate limit or a `529` overload. The summary comment says the session went silent. A review that times out or fails for another reason logs the same details. Stopping the process needs Linux's `/proc`; on other runners the watchdog still reports the stall, and the job timeout ends the run.
 
