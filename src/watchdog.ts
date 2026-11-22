@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -26,11 +26,13 @@ export interface WatchState {
 export interface WatchDeps {
   now: () => number;
   sleep: (ms: number) => Promise<void>;
-  /** Transcripts written at or after `since` (ms), newest first. */
-  transcripts: (since: number) => Transcript[];
+  /** The directory watched and its transcripts written at or after `since` (ms), newest first. */
+  transcripts: (since: number) => { dir: string; files: Transcript[] };
   findClaude: () => number[];
   kill: (pid: number, signal: 'SIGTERM' | 'SIGKILL') => void;
   save: (state: WatchState) => void;
+  /** One line to the watchdog's log, which the stop step prints into the job log. */
+  log: (line: string) => void;
 }
 
 export interface Transcript {
@@ -50,9 +52,10 @@ export async function watch(opts: { idleMs: number; pollMs: number }, deps: Watc
   const start = deps.now();
   let baseline = start;
   let stalledAt: number | null = null;
+  const seen = new Set<string>();
   for (;;) {
     await deps.sleep(opts.pollMs);
-    const files = deps.transcripts(start);
+    const { dir, files } = deps.transcripts(start);
     const newest = files[0]?.mtime ?? 0;
     if (stalledAt !== null && newest > stalledAt) stalledAt = null;
     const last = Math.max(baseline, newest);
@@ -64,6 +67,12 @@ export async function watch(opts: { idleMs: number; pollMs: number }, deps: Watc
       stopped: 0,
       lastApiError: lastApiError(files.map((f) => f.path)),
     };
+    const at = new Date(deps.now()).toISOString();
+    for (const file of files.filter((f) => !seen.has(f.path)).reverse()) {
+      seen.add(file.path);
+      deps.log(`${at} transcript ${file.path}`);
+    }
+    deps.log(`${at} dir=${dir} transcripts=${files.length} lastActivity=${state.lastActivity}`);
     if (deps.now() - last < opts.idleMs) {
       if (stalledAt === null) deps.save(state);
       continue;
@@ -73,6 +82,7 @@ export async function watch(opts: { idleMs: number; pollMs: number }, deps: Watc
     if (stalledAt === null || pids.length > 0) {
       for (const pid of pids) deps.kill(pid, 'SIGTERM');
       deps.save({ ...state, stalled: true, stopped: pids.length });
+      deps.log(`${at} silent for ${minutes(state.idleMinutes)}: stopped ${pids.length} Claude Code process(es)`);
       stalledAt = deps.now();
     }
     if (pids.length > 0) {
@@ -81,6 +91,18 @@ export async function watch(opts: { idleMs: number; pollMs: number }, deps: Watc
     }
     baseline = deps.now();
   }
+}
+
+/**
+ * Where to look for this job's transcripts. Claude Code keeps a session's transcripts in `projects/` under a directory
+ * named after its working directory, each character other than a letter or digit replaced by `-`, and
+ * claude-code-action runs it in the workspace. On a shared host that keeps other jobs' sessions out, since each
+ * runner has its own workspace. Until that directory exists (or if Claude Code names it differently), the whole of
+ * `projects/` is watched, so a session is never missed.
+ */
+export function transcriptDir(projects: string, workspace: string): string {
+  const own = join(projects, workspace.replace(/[^A-Za-z0-9]/g, '-'));
+  return existsSync(own) ? own : projects;
 }
 
 /** Every `*.jsonl` under `dir` written at or after `since`, newest first; none when `dir` is absent. */

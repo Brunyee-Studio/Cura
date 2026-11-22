@@ -25,7 +25,7 @@ import { rescore, type RescoreResult } from './rescore.ts';
 import { loadSchema } from './schema.ts';
 import { FALLBACK_PREFIX, readTrace, renderTrace, traceWarnings, type ReviewTrace } from './trace.ts';
 import type { CuraConfig, FileFact, Finding, HunkMap, Review, Severity, Thread } from './types.ts';
-import { claudeProcesses, describeWatch, minutes, saveState, transcriptsUnder, watch, WATCH_FILE, type WatchState } from './watchdog.ts';
+import { claudeProcesses, describeWatch, minutes, saveState, transcriptDir, transcriptsUnder, watch, WATCH_FILE, type WatchState } from './watchdog.ts';
 
 type Env = NodeJS.ProcessEnv;
 
@@ -115,7 +115,7 @@ export async function main(argv: string[], env: Env, io: Io, deps: Partial<Deps>
     case 'check':
       return check(args, env, io);
     case 'watch':
-      return runWatch(env);
+      return runWatch(env, io);
     case 'publish':
       return runPublish(env, io, d);
     case 'rescore':
@@ -398,17 +398,22 @@ function planCaps(ctxDir: string) {
 const WATCH_POLL_MS = 30_000;
 
 /** Runs until the action kills it once the Claude steps end. */
-async function runWatch(env: Env): Promise<never> {
+async function runWatch(env: Env, io: Io): Promise<never> {
   const ctxDir = ctxFromEnv(env);
-  const idleMinutes = positiveInt(env, 'CURA_IDLE_MINUTES', 5);
+  const idleMinutes = positiveInt(env, 'CURA_IDLE_MINUTES', 10);
   const projects = join(env.CLAUDE_CONFIG_DIR || join(env.HOME || homedir(), '.claude'), 'projects');
+  const workspace = env.GITHUB_WORKSPACE || process.cwd();
   const job = { runId: required(env, 'GITHUB_RUN_ID'), runnerTemp: required(env, 'RUNNER_TEMP') };
+  io.stdout(`${new Date().toISOString()} watching ${projects} for ${workspace}, idle limit ${minutes(idleMinutes)}`);
   return watch(
     { idleMs: idleMinutes * 60_000, pollMs: WATCH_POLL_MS },
     {
       now: Date.now,
       sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
-      transcripts: (since) => transcriptsUnder(projects, since),
+      transcripts: (since) => {
+        const dir = transcriptDir(projects, workspace);
+        return { dir, files: transcriptsUnder(dir, since) };
+      },
       findClaude: () => claudeProcesses('/proc', job),
       kill: (pid, signal) => {
         try {
@@ -418,6 +423,7 @@ async function runWatch(env: Env): Promise<never> {
         }
       },
       save: (s) => saveState(join(ctxDir, WATCH_FILE), s),
+      log: io.stdout,
     },
   );
 }

@@ -150,7 +150,9 @@ describe('action.yml', () => {
     expect(stop).toBeLessThan(keys.indexOf('publish'));
     expect(steps()[stop]!.text).toContain("if: always() && steps.watchdog.outcome == 'success'");
     expect(steps()[stop]!.text).toContain('kill "$(cat "$CURA_CTX/watchdog.pid")"');
-    expect(action).toMatch(/^ {2}idle_timeout_minutes:\n(?: {4}.*\n)* {4}default: '5'$/m);
+    // Its log goes to the job log, so a run shows which transcripts the watchdog found.
+    expect(steps()[stop]!.text).toContain('cat "$CURA_CTX/watchdog.log" "$CURA_CTX/watchdog.json" 2>/dev/null || true');
+    expect(action).toMatch(/^ {2}idle_timeout_minutes:\n(?: {4}.*\n)* {4}default: '10'$/m);
   });
 
   test("removes claude-code-action's git credentials right after the Claude step, always", () => {

@@ -81,7 +81,7 @@ inputs:
   idle_timeout_minutes:
     description: Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so the review fails fast.
     required: false
-    default: '5'
+    default: '10'
 
   mode:
     description: >-
@@ -314,6 +314,9 @@ runs:
         CURA_CTX: ${{ runner.temp }}/cura
       run: |
         kill "$(cat "$CURA_CTX/watchdog.pid")" 2>/dev/null || true
+        echo "::group::Claude Code watchdog"
+        cat "$CURA_CTX/watchdog.log" "$CURA_CTX/watchdog.json" 2>/dev/null || true
+        echo "::endgroup::"
 
     # Runs even when the review failed so the summary comment reports it. It
     # fails closed: anything but a successful agent outcome publishes a failure.

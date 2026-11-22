@@ -49,7 +49,7 @@ on:
       idle_timeout_minutes:
         description: Stop a Claude Code session that writes nothing to its transcripts for this many minutes, so the review fails fast.
         type: number
-        default: 5
+        default: 10
       allowed_bots:
         description: Comma-separated bot logins allowed to trigger the review (e.g. `dependabot[bot]`).
         type: string

@@ -198,7 +198,7 @@ describe('review.yml', () => {
       'allow_forks',
     ]);
     expect(reviewInputs.get('timeout_minutes')).toBe('20');
-    expect(reviewInputs.get('idle_timeout_minutes')).toBe('5');
+    expect(reviewInputs.get('idle_timeout_minutes')).toBe('10');
   });
 
   test('every input is forwarded to the action or used by the job', () => {

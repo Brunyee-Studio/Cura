@@ -8,6 +8,7 @@ import {
   KILL_GRACE_MS,
   lastApiError,
   saveState,
+  transcriptDir,
   transcriptsUnder,
   watch,
   type Transcript,
@@ -37,26 +38,30 @@ function fakeDeps(opts: { until: number; writes?: number[]; alive?: (at: number,
   const killed = new Set<number>();
   const saved: { at: number; state: WatchState }[] = [];
   const kills: { at: number; pid: number; signal: string }[] = [];
+  const logs: string[] = [];
   const deps: WatchDeps = {
     now: () => clock,
     sleep: async (ms) => {
       clock += ms;
       if (clock - START > opts.until) throw new Error('end of test');
     },
-    transcripts: (since) =>
-      (opts.writes ?? [])
+    transcripts: (since) => ({
+      dir: root,
+      files: (opts.writes ?? [])
         .filter((t) => t >= since && t <= clock)
-        .map((mtime): Transcript => ({ path: join(root, 'none.jsonl'), mtime }))
+        .map((mtime): Transcript => ({ path: join(root, `${mtime - START}.jsonl`), mtime }))
         .sort((a, b) => b.mtime - a.mtime),
+    }),
     findClaude: () => opts.alive?.(clock, killed) ?? [],
     kill: (pid, signal) => {
       kills.push({ at: clock - START, pid, signal });
       killed.add(pid);
     },
     save: (state) => void saved.push({ at: clock - START, state }),
+    log: (line) => void logs.push(line),
   };
   const run = (idleMs: number) => expect(watch({ idleMs, pollMs: 30_000 }, deps)).rejects.toThrow('end of test');
-  return { run, saved, kills, last: () => saved.at(-1)!.state };
+  return { run, saved, kills, logs, last: () => saved.at(-1)!.state };
 }
 
 /** pid 942 runs until killed. */
@@ -122,6 +127,21 @@ describe('watch', () => {
     expect(fake.saved.filter((s) => s.at > 5 * MINUTE)).toEqual([]);
   });
 
+  test('logs the directory, each new transcript and the last activity on every poll, and each stall', async () => {
+    const fake = fakeDeps({ until: 2 * MINUTE, writes: [START + 30_000, START + 60_000], alive: lead });
+    await fake.run(MINUTE);
+    const t = (ms: number) => new Date(START + ms).toISOString();
+    expect(fake.logs).toEqual([
+      `${t(30_000)} transcript ${join(root, '30000.jsonl')}`,
+      `${t(30_000)} dir=${root} transcripts=1 lastActivity=${t(30_000)}`,
+      `${t(60_000)} transcript ${join(root, '60000.jsonl')}`,
+      `${t(60_000)} dir=${root} transcripts=2 lastActivity=${t(60_000)}`,
+      `${t(90_000)} dir=${root} transcripts=2 lastActivity=${t(60_000)}`,
+      `${t(120_000)} dir=${root} transcripts=2 lastActivity=${t(60_000)}`,
+      `${t(120_000)} silent for 1 minute: stopped 1 Claude Code process(es)`,
+    ]);
+  });
+
   test('records a stall it cannot stop', async () => {
     const fake = fakeDeps({ until: 2 * MINUTE });
     await fake.run(MINUTE);
@@ -146,6 +166,15 @@ describe('transcriptsUnder', () => {
       [join(session, 'abc', 'subagents', 'agent-1.jsonl'), START + 2 * MINUTE],
       [join(session, 'abc.jsonl'), START + MINUTE],
     ]);
+  });
+
+  test("watches the job's own session directory once it exists, the whole projects dir until then", () => {
+    const projects = join(root, 'projects');
+    const workspace = '/_work/github-runner-a/Onus/Onus';
+    expect(transcriptDir(projects, workspace)).toBe(projects);
+    mkdirSync(join(projects, '--work-github-runner-a-Onus-Onus'), { recursive: true });
+    expect(transcriptDir(projects, workspace)).toBe(join(projects, '--work-github-runner-a-Onus-Onus'));
+    expect(transcriptDir(projects, '/home/runner/work/my.repo/my.repo')).toBe(projects);
   });
 
   test('finds nothing when the directory does not exist', () => {
